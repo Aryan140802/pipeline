@@ -193,7 +193,9 @@ stages:
   displayName: Deploy Stage
   pool:
     name: TFS-RH-1
-  dependsOn: Build
+  dependsOn:
+    - Validation_Stage
+    - Build
   condition: |
     and(
       succeeded('Build'),
