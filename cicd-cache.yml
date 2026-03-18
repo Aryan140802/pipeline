@@ -4,11 +4,7 @@ stages:
   displayName: Validation and Intialization
   pool:
     name: TFS-RH-1
-  condition: |
-    and(
-      ne(variables['Build.Reason'], 'PullRequest'),
-      ne(variables['Build.SourceBranchName'], 'main')
-    )
+  condition: and(ne(variables['Build.Reason'], 'PullRequest'), ne(variables['Build.SourceBranchName'], 'main'))
   jobs:
     - job: Validation_Job
       displayName: Validation
@@ -112,11 +108,7 @@ stages:
   dependsOn: Validation_Stage
   pool:
     name: TFS-RH-1
-  condition: |
-    and(
-      in(dependencies.Validation_Stage.result, 'Succeeded', 'Skipped'),
-      ne(variables['Build.SourceBranchName'], 'main')
-    )
+  condition: and(in(dependencies.Validation_Stage.result, 'Succeeded', 'Skipped'), ne(variables['Build.SourceBranchName'], 'main'))
   jobs:
     - job: Build_Job
       displayName: Agent Build job
@@ -199,16 +191,7 @@ stages:
   dependsOn:
     - Validation_Stage
     - Build
-  condition: |
-    and(
-      succeeded('Build'),
-      eq(
-        dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'],
-        'true'
-      ),
-      ne(variables['Build.Reason'], 'PullRequest'),
-      ne(variables['Build.SourceBranchName'], 'main')
-    )
+  condition: and(succeeded('Build'), eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'], 'true'), ne(variables['Build.Reason'], 'PullRequest'), ne(variables['Build.SourceBranchName'], 'main'))
   jobs:
     - deployment: DeployApp
       displayName: Deployment Job
@@ -257,23 +240,7 @@ stages:
   dependsOn:
     - Validation_Stage
     - Build
-  condition: |
-    and(
-      succeeded('Validation_Stage'),
-      eq(
-        dependencies.Validation_Stage.outputs['Validation_Job.val_task.CacheFlag'],
-        'true'
-      ),
-      or(
-        eq(
-          dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'],
-          'false'
-        ),
-        succeeded('Build')
-      ),
-      ne(variables['Build.Reason'], 'PullRequest'),
-      ne(variables['Build.SourceBranchName'], 'main')
-    )
+  condition: and(succeeded('Validation_Stage'), eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.CacheFlag'], 'true'), or(eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'], 'false'), succeeded('Build')), ne(variables['Build.Reason'], 'PullRequest'), ne(variables['Build.SourceBranchName'], 'main'))
   jobs:
     - job: Cache_Job
       displayName: CACHE UPDATE
