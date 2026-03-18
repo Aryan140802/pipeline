@@ -1,0 +1,36 @@
+DedupOnDOBName_th_expDS:
+  ApplicationName: DedupOnDOBName_th_expDS
+  IntegrationNode: CUSTOMER_EXP
+  IntegrationServer: Customer_E_15
+  Deploy: true  
+  Cache:
+
+DepositTermProductChangeDetails_th_expDS:
+   IntegrationNode: ACCOUNT_EXP
+   IntegrationServer: Account_E_03
+   Deploy: true
+
+thirdPartyAAMAZE_sys:
+  IntegrationNode: PAYMENT_SYS
+  IntegrationServer: Payment_S_03
+  Deploy: true
+
+thirdPartyNHB_sys:
+  IntegrationNode: CUSTOMER_SYS
+  IntegrationServer: Customer_S_08
+  Deploy: true
+  
+
+
+
+# APINAME:
+#    IntegrationNode: "Mandatory value, name of the Integration Node where the application has to be deployed or the Cache has to be Updated"
+#    IntegrationServer: "Mandatory value, name of the Integration server where the application has to be deployed"
+#    Deploy: true  "By default Deploy value is true even it is not mentioned in the yml,if deployment has to be skipped give value false"
+#    Cache:   
+#      - Query: "Query to be executed in DB in single line"
+#        FIELD_NAME: "Update the server cache value, field_name and field_value will be updtaed on the server where the above IntegrationNode mentioned is present"
+#        FIELD_VALUE: "Update the server cache value"
+#      - Query:
+#        FIELD_NAME:
+#        FIELD_VALUE:
