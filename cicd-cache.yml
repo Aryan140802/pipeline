@@ -31,6 +31,15 @@ stages:
               echo "branch: $BRANCH"
               echo "DONE 1"
 
+              # Skip config validation for main branch (e.g. PR targeting main)
+              # Build will still proceed; Deploy and Cache are disabled for main
+              if [ "$BRANCH" = "main" ]; then
+                echo "Branch is 'main' — skipping config validation"
+                echo "##vso[task.setvariable variable=DeployFlag;isOutput=true]false"
+                echo "##vso[task.setvariable variable=CacheFlag;isOutput=true]false"
+                exit 0
+              fi
+
               if [ ! -e $(Build.SourcesDirectory)/app/Config ]; then
                 echo "DONE 2"
                 mkdir -p $(Build.SourcesDirectory)/app/Config
@@ -73,37 +82,18 @@ stages:
               CACHE_PRESENT=$(yq e ".Cache // [] | length > 0" "$config_path" | tr -d '[:space:]')
               echo "CACHE: $CACHE_PRESENT DEPLOY: $DEPLOY"
 
-              # FIX 1: Corrected broken bash bracket syntax for DEPLOY check
-              # ORIGINAL (broken):
-              #   if [ "$DEPLOY" = false ] || [ "$DEPLOY" = "false" || "$DEPLOY" = "False" ]; then
-              #   The second [ was never closed — this is a bash syntax error that crashed
-              #   the script before DeployFlag could ever be published via ##vso[task.setvariable]
-              # FIXED: Each OR condition wrapped in its own separate [ ] brackets
               if [ "$DEPLOY" = "false" ] || [ "$DEPLOY" = "False" ] || [ "$DEPLOY" = false ]; then
                 DEPLOY="false"
               else
                 DEPLOY="true"
               fi
 
-              # FIX 1 (same): Corrected broken bash bracket syntax for CACHE_PRESENT check
-              # ORIGINAL (broken):
-              #   if [ "$CACHE_PRESENT" = true ] || [ "$CACHE_PRESENT" = "true" || "$CACHE_PRESENT" = "True" ]; then
-              #   Same unclosed bracket issue as the DEPLOY check above
-              # FIXED: Each OR condition wrapped in its own separate [ ] brackets
               if [ "$CACHE_PRESENT" = "true" ] || [ "$CACHE_PRESENT" = "True" ] || [ "$CACHE_PRESENT" = true ]; then
                 CACHE_PRESENT="true"
               else
                 CACHE_PRESENT="false"
               fi
 
-              # FIX 2: Corrected flag validation to compare against quoted strings
-              # ORIGINAL (broken):
-              #   if [ "$DEPLOY" != true ] && [ "$DEPLOY" != false ]; then
-              #   At this point DEPLOY is already normalized to the string "true" or "false"
-              #   Bash compares string "true" against bare word true — they are never equal in [ ]
-              #   So this block was ALWAYS true, always hitting exit 1
-              #   meaning ##vso[task.setvariable] lines below were never reached
-              # FIXED: Compare against quoted strings "true" and "false"
               if [ "$DEPLOY" != "true" ] && [ "$DEPLOY" != "false" ]; then
                 echo "Invalid Deploy flag in config.yml"
                 exit 1
@@ -153,12 +143,15 @@ stages:
 
               applicationName=$(ls -1 $(Build.SourcesDirectory)/app | grep -vE "Config|README.md|azure-pipelines.yml" | tail -n 1)
 
-              # FIX 3: Corrected inverted directory existence check
-              # ORIGINAL (broken): if [ -e ... ]; then mkdir
-              #   Was calling mkdir only when the directory ALREADY existed — backwards logic
-              #   When Config did not exist, mkdir was skipped causing downstream path failures
-              # FIXED: if [ ! -e ... ]; then mkdir
-              #   Now correctly creates Config directory only when it is missing
+              # For main branch, skip config resolution and build with source only
+              if [ "$BRANCH" = "main" ]; then
+                echo "Branch is 'main' — building without config"
+                ibmint package --input-path $(Build.SourcesDirectory)/app \
+                               --output-bar-file $(Build.BinariesDirectory)/$applicationName.bar \
+                               --java-version 8
+                exit 0
+              fi
+
               if [ ! -e $(Build.SourcesDirectory)/app/Config ]; then
                 mkdir -p $(Build.SourcesDirectory)/app/Config
               fi
@@ -187,12 +180,6 @@ stages:
                                --java-version 8 \
                                --overrides-file "$override_path"
               else
-                # FIX 4: Corrected --input-path to point to /app subfolder
-                # ORIGINAL (broken): --input-path $(Build.SourcesDirectory)
-                #   Pointed to workspace root which contains BOTH app/ and eis-configurations/
-                #   ibmint would attempt to package both repos together — incorrect behaviour
-                # FIXED: --input-path $(Build.SourcesDirectory)/app
-                #   Now consistent with the override branch above, packaging only the app source
                 ibmint package --input-path $(Build.SourcesDirectory)/app \
                                --output-bar-file $(Build.BinariesDirectory)/$applicationName.bar \
                                --java-version 8
@@ -220,13 +207,6 @@ stages:
   displayName: Deploy Stage
   pool:
     name: TFS-RH-1
-  # FIX 5: Added Validation_Stage to dependsOn
-  # ORIGINAL (broken): dependsOn: Build
-  #   Azure DevOps only exposes output variables from stages explicitly listed in dependsOn
-  #   Even though Build depends on Validation, that chain does NOT carry outputs forward
-  #   So dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'] resolved to null
-  #   eq(null, 'true') evaluates to false — Release stage condition always failed and was skipped
-  # FIXED: List both Validation_Stage and Build so Validation outputs are directly accessible
   dependsOn:
     - Validation_Stage
     - Build
@@ -356,12 +336,6 @@ stages:
               for broker_file in /home/devops/broker/$BRANCH/$IntegrationNode*; do
                 host=$(cat "$broker_file" | grep host | cut -d"\"" -f4)
                 if yq -e ".Cache" config.yml >/dev/null 2>&1; then
-                  # FIX 6: Removed ".$BRANCH." prefix from yq path in cache payload
-                  # ORIGINAL (broken): yq -o=json ".$BRANCH.Cache | map(...)" config.yml
-                  #   By this stage config.yml has already been flattened in the Build stage
-                  #   (branch key removed, only flat fields like IntegrationNode, Cache remain)
-                  #   ".$BRANCH.Cache" returns null since the branch key no longer exists
-                  # FIXED: Use ".Cache" directly since config is already branch-resolved
                   response=$(curl -s -k -X POST http://"$host":8002/cache/v1/loadCache \
                     -H "Content-Type: application/json" \
                     -d "$(yq -o=json ".Cache | map({\"FIELD_NAME\": .FIELD_NAME, \"FIELD_VALUE\": .FIELD_VALUE})" config.yml)")
@@ -370,7 +344,6 @@ stages:
                     exit 1
                   fi
                   echo "Cache load successful on $host"
-                  # FIX 6 (same): Removed ".$BRANCH." prefix from echo payload as well
                   echo "$(yq -o=json ".Cache | map({\"FIELD_NAME\": .FIELD_NAME, \"FIELD_VALUE\": .FIELD_VALUE})" config.yml)"
                 fi
               done
