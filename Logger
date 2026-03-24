@@ -1,0 +1,124 @@
+stages:
+
+- stage: Validation_Stage
+  displayName: Validation
+  pool:
+    name: TFS-RH-1
+
+  jobs:
+    - job: Validation_Job
+      steps:
+
+        - checkout: self
+          path: s/app
+
+        - checkout: git://devops_testing/eis-configuration@refs/heads/config
+          path: s/eis-configurations
+
+        - task: CmdLine@2
+          name: val_task
+          env:
+            BRANCH: $(Build.SourceBranchName)
+            APP_NAME: $(APP_NAME)
+          inputs:
+            script: |
+              set -e
+
+              echo "App: $APP_NAME"
+              echo "Branch: $BRANCH"
+
+              CONFIG_FILE=$(Build.SourcesDirectory)/eis-configurations/"$BRANCH"_config.yml
+
+              yq e ".$APP_NAME" "$CONFIG_FILE" > config.yml
+
+              if [ ! -s config.yml ]; then
+                echo "ERROR: Config not found for $APP_NAME"
+                exit 1
+              fi
+
+              cp config.yml $(Build.ArtifactStagingDirectory)
+
+              echo "##vso[task.setvariable variable=DeployFlag;isOutput=true]true"
+
+
+
+- stage: Build
+  dependsOn: Validation_Stage
+  pool:
+    name: TFS-RH-1
+
+  jobs:
+    - job: Build_Job
+      steps:
+
+        - checkout: self
+          path: s/app
+
+        - task: CmdLine@2
+          env:
+            APP_NAME: $(APP_NAME)
+          inputs:
+            script: |
+              set -e
+              . /opt/IBM/ace/server/bin/mqsiprofile
+
+              ibmint package \
+                --input-path $(Build.SourcesDirectory)/app \
+                --output-bar-file $(Build.BinariesDirectory)/$APP_NAME.bar \
+                --java-version 8
+
+
+
+
+
+- stage: Release
+  dependsOn:
+    - Validation_Stage
+    - Build
+
+  condition: succeeded()
+
+  jobs:
+    - job: Deploy_All_EGs
+      steps:
+
+        - download: current
+          artifact: drop
+
+        - task: CmdLine@2
+          env:
+            BRANCH: $(Build.SourceBranchName)
+            APP_NAME: $(APP_NAME)
+          inputs:
+            workingDirectory: $(Pipeline.Workspace)/drop
+            script: |
+              set -e
+              . /opt/IBM/ace/server/bin/mqsiprofile
+
+              CONFIG_FILE=$(Pipeline.Workspace)/drop/config.yml
+
+              IntegrationNode=$(yq e ".IntegrationNode" $CONFIG_FILE)
+              IntegrationServer=$(yq e ".IntegrationServer" $CONFIG_FILE)
+
+              echo "Node: $IntegrationNode"
+              echo "Server: $IntegrationServer"
+
+              echo "Deploying to ALL broker files..."
+
+              for broker_file in /home/devops/broker/$BRANCH/${IntegrationNode}_*.broker
+              do
+                echo "--------------------------------------"
+                echo "Processing $broker_file"
+
+                host=$(grep host $broker_file | cut -d'"' -f4)
+                eg=$(grep executionGroup $broker_file | cut -d'"' -f4)
+
+                echo "HOST: $host | EG: $eg"
+
+                ibmint deploy \
+                  --input-bar-file "$APP_NAME.bar" \
+                  --integration-node-file "$broker_file" \
+                  --output-server "$IntegrationServer"
+
+              done
+
