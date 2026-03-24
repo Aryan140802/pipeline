@@ -1,17 +1,18 @@
-stages:
-# ============== Validation and Initilization ============
-- stage: Validation_Stage
-  displayName: Validation
-  pool:
-    name: TFS-RH-1
-  
   variables:
     ${{ if contains(variables['Build.SourceBranchName'], 'eapi') }}:
       APP_NAME: EIS-API-LOGGER-eapi
 
     ${{ elseif contains(variables['Build.SourceBranchName'], 'sapi') }}:
       APP_NAME: EIS-API-LOGGER-sapi
-    
+
+
+stages:
+# ============== Validation and Initilization ============
+- stage: Validation_Stage
+  displayName: Validation
+  pool:
+    name: TFS-RH-1
+      
 
   jobs:
     - job: Validation_Job
