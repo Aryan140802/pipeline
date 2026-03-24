@@ -3,7 +3,12 @@ stages:
 - stage: Validation_Stage
   displayName: Validation
   pool:
-    name: TFS-RH-1
+    name: TFS-RH-variables:
+  ${{ if contains(variables['Build.SourceBranchName'], 'eapi') }}:
+    APP_NAME: EIS-API-LOGGER-eapi
+
+  ${{ elseif contains(variables['Build.SourceBranchName'], 'sapi') }}:
+    APP_NAME: EIS-API-LOGGER-sapi
 
   jobs:
     - job: Validation_Job
