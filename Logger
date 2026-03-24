@@ -1,9 +1,9 @@
-  variables:
-    ${{ if contains(variables['Build.SourceBranchName'], 'eapi') }}:
-      APP_NAME: EIS-API-LOGGER-eapi
+variables:
+  ${{ if contains(variables['Build.SourceBranchName'], 'eapi') }}:
+    APP_NAME: EIS-API-LOGGER-eapi
 
-    ${{ elseif contains(variables['Build.SourceBranchName'], 'sapi') }}:
-      APP_NAME: EIS-API-LOGGER-sapi
+  ${{ elseif contains(variables['Build.SourceBranchName'], 'sapi') }}:
+    APP_NAME: EIS-API-LOGGER-sapi
 
 
 stages:
