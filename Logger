@@ -4,9 +4,9 @@ parameters:
     default: ''
 
 stages:
-# ============== Validation and Initilization ============
+# ============== VALIDATION STAGE ==============
 - stage: Validation_Stage
-  displayName: Validation and Intialization
+  displayName: Validation and Initialization
   pool:
     name: TFS-RH-1
   jobs:
@@ -30,105 +30,84 @@ stages:
           inputs:
             script: |
               set -e
+
+              # ── Resolve application name ──────────────────────────────────────
               if [ -z "${{ parameters.applicationName }}" ]; then
-                applicationName=$(ls -1 $(Build.SourcesDirectory)/app | grep -vE "Config|README.md|azure-pipelines.yml" | tail -n 1)
+                applicationName=$(ls -1 $(Build.SourcesDirectory)/app \
+                  | grep -vE "Config|README.md|azure-pipelines.yml" \
+                  | tail -n 1)
               else
                 applicationName="${{ parameters.applicationName }}"
               fi
-
               echo "Application name : $applicationName"
-              echo "branch: $BRANCH"
-              echo "DONE 1"
+              echo "Branch           : $BRANCH"
 
+              # ── Skip deploy logic for main branch ────────────────────────────
               if [ "$BRANCH" = "main" ]; then
-                echo "Branch is 'main'"
+                echo "Branch is 'main' — skipping deploy"
                 echo "##vso[task.setvariable variable=DeployFlag;isOutput=true]false"
-                echo "##vso[task.setvariable variable=CacheFlag;isOutput=true]false"
                 exit 0
               fi
 
-              if [ ! -e $(Build.SourcesDirectory)/app/Config ]; then
-                echo "DONE 2"
-                mkdir -p $(Build.SourcesDirectory)/app/Config
-                echo "DONE 3"
-              fi
+              # ── Ensure Config directory exists ───────────────────────────────
+              mkdir -p $(Build.SourcesDirectory)/app/Config
 
-              echo "DONE 4"
-              yq e ".$applicationName | select(. !=null)" $(Build.SourcesDirectory)/eis-configurations/"$BRANCH"_config.yml > $(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml
-              echo "DONE 5"
+              # ── Pull config from eis-configurations for this branch ──────────
+              EIS_CONFIG=$(Build.SourcesDirectory)/eis-configurations/"$BRANCH"_config.yml
+              CONFIG_OUT=$(Build.SourcesDirectory)/app/Config/config.yml
 
-              if [ -s $(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml ]; then
-                echo "IN config_eis_configuration.yml"
-                config_path=$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml
-                cp "$config_path" $(Build.ArtifactStagingDirectory)
-              elif [ -s $(Build.SourcesDirectory)/app/Config/config.yml ]; then
-                echo "IN config.yml"
-                yq e ".$BRANCH" $(Build.SourcesDirectory)/app/Config/config.yml > $(Build.SourcesDirectory)/app/Config/temp.yml && mv $(Build.SourcesDirectory)/app/Config/temp.yml $(Build.SourcesDirectory)/app/Config/config.yml
-                config_path=$(Build.SourcesDirectory)/app/Config/config.yml
-                cat "$config_path"
-                cp "$config_path" $(Build.ArtifactStagingDirectory)
-              else
-                echo "ERROR: config.yml not found"
+              echo "Reading from EIS config: $EIS_CONFIG"
+              yq e ".$applicationName | select(. != null)" "$EIS_CONFIG" > "$CONFIG_OUT"
+
+              if [ ! -s "$CONFIG_OUT" ]; then
+                echo "ERROR: No entry found for '$applicationName' in $EIS_CONFIG"
                 exit 1
               fi
 
-              REQUIRED_FIELDS=(
-                IntegrationNode
-                IntegrationServer
-              )
-              for field in "${REQUIRED_FIELDS[@]}"; do
-                value=$(yq e ".$field // \"\"" "$config_path" | tr -d '[:space:]')
-                echo "Value: $value"
-                if [ -z "$value" ]; then
-                  echo " ERROR: $field is missing or empty "
+              echo "--- Resolved config ---"
+              cat "$CONFIG_OUT"
+              echo "-----------------------"
+
+              # ── Validate required fields ─────────────────────────────────────
+              for field in IntegrationNode IntegrationServer; do
+                value=$(yq e ".$field // \"\"" "$CONFIG_OUT" | tr -d '[:space:]')
+                # IntegrationServer is allowed to be empty (deploy everywhere)
+                if [ "$field" = "IntegrationNode" ] && [ -z "$value" ]; then
+                  echo "ERROR: $field is missing or empty"
                   exit 1
                 fi
               done
 
-              DEPLOY=$(yq e ".Deploy" "$config_path" | tr -d '[:space:]')
-              CACHE_PRESENT=$(yq e ".Cache // [] | length > 0" "$config_path" | tr -d '[:space:]')
-              echo "CACHE: $CACHE_PRESENT DEPLOY: $DEPLOY"
-
-              if [ "$DEPLOY" = "false" ] || [ "$DEPLOY" = "False" ] || [ "$DEPLOY" = false ]; then
+              # ── Resolve Deploy flag (default = true) ─────────────────────────
+              DEPLOY=$(yq e ".Deploy // \"true\"" "$CONFIG_OUT" | tr -d '[:space:]')
+              if [ "$DEPLOY" = "false" ] || [ "$DEPLOY" = "False" ]; then
                 DEPLOY="false"
               else
                 DEPLOY="true"
               fi
 
-              if [ "$CACHE_PRESENT" = "true" ] || [ "$CACHE_PRESENT" = "True" ] || [ "$CACHE_PRESENT" = true ]; then
-                CACHE_PRESENT="true"
-              else
-                CACHE_PRESENT="false"
-              fi
-
-              if [ "$DEPLOY" != "true" ] && [ "$DEPLOY" != "false" ]; then
-                echo "Invalid Deploy flag in config.yml"
-                exit 1
-              fi
-
+              echo "Deploy flag: $DEPLOY"
               echo "##vso[task.setvariable variable=DeployFlag;isOutput=true]$DEPLOY"
-              echo "##vso[task.setvariable variable=CacheFlag;isOutput=true]$CACHE_PRESENT"
 
+              cp "$CONFIG_OUT" $(Build.ArtifactStagingDirectory)/config.yml
 
         - task: PublishBuildArtifacts@1
-          condition: eq(variables['val_task.DeployFlag'], 'false')
+          condition: always()
           inputs:
             PathtoPublish: $(Build.ArtifactStagingDirectory)
             ArtifactName: drop
 
 
-# ================= BUILD STAGE =================
+# ============== BUILD STAGE ==============
 - stage: Build
   displayName: Build Stage
   dependsOn: Validation_Stage
   pool:
     name: TFS-RH-1
-
   condition: succeeded('Validation_Stage')
-
   jobs:
     - job: Build_Job
-      displayName: Agent Build job
+      displayName: Agent Build Job
       workspace:
         clean: all
       steps:
@@ -140,7 +119,7 @@ stages:
           path: s/eis-configurations
 
         - task: CmdLine@2
-          displayName: Building Bar file
+          displayName: Building BAR file
           env:
             BRANCH: $(Build.SourceBranchName)
           inputs:
@@ -148,59 +127,45 @@ stages:
               set -e
               . /opt/IBM/ace/server/bin/mqsiprofile
 
+              # ── Resolve application name ──────────────────────────────────────
               if [ -z "${{ parameters.applicationName }}" ]; then
-                applicationName=$(ls -1 $(Build.SourcesDirectory)/app | grep -vE "Config|README.md|azure-pipelines.yml" | tail -n 1)
+                applicationName=$(ls -1 $(Build.SourcesDirectory)/app \
+                  | grep -vE "Config|README.md|azure-pipelines.yml" \
+                  | tail -n 1)
               else
                 applicationName="${{ parameters.applicationName }}"
               fi
 
-              # For main branch, skip config resolution and build with source only
+              mkdir -p $(Build.SourcesDirectory)/app/Config
+
+              # ── For main branch: build only, no config ────────────────────────
               if [ "$BRANCH" = "main" ]; then
                 echo "Branch is 'main' — building without config"
-                ibmint package --input-path $(Build.SourcesDirectory)/app \
-                               --output-bar-file $(Build.BinariesDirectory)/$applicationName.bar \
-                               --java-version 8
-                mqsireadbar -b $(Build.BinariesDirectory)/$applicationName.bar -r | grep "=" | sed -e 's/^[[:space:]]*//' > $(Build.BinariesDirectory)/override.properties
+                ibmint package \
+                  --input-path $(Build.SourcesDirectory)/app \
+                  --output-bar-file $(Build.BinariesDirectory)/$applicationName.bar \
+                  --java-version 8
                 exit 0
               fi
 
-              if [ ! -e $(Build.SourcesDirectory)/app/Config ]; then
-                mkdir -p $(Build.SourcesDirectory)/app/Config
-              fi
+              # ── Pull config from eis-configurations ──────────────────────────
+              EIS_CONFIG=$(Build.SourcesDirectory)/eis-configurations/"$BRANCH"_config.yml
+              CONFIG_OUT=$(Build.SourcesDirectory)/app/Config/config.yml
 
-              yq e ".$applicationName" $(Build.SourcesDirectory)/eis-configurations/"$BRANCH"_config.yml > $(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml
+              yq e ".$applicationName | select(. != null)" "$EIS_CONFIG" > "$CONFIG_OUT"
+              yq -i ".ApplicationName = \"$applicationName\"" "$CONFIG_OUT"
 
-              if [ -s $(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml ]; then
-                cat "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml" > $(Build.SourcesDirectory)/app/Config/config.yml
-                rm $(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml
-              fi
+              echo "--- Config used for build ---"
+              cat "$CONFIG_OUT"
+              echo "-----------------------------"
 
-              config_path=$(Build.SourcesDirectory)/app/Config/config.yml
-              yq -i ".ApplicationName = \"$applicationName\"" "$config_path"
+              # ── Build BAR (no overrides) ──────────────────────────────────────
+              ibmint package \
+                --input-path $(Build.SourcesDirectory)/app \
+                --output-bar-file $(Build.BinariesDirectory)/$applicationName.bar \
+                --java-version 8
 
-              if [ "$BRANCH" != "DEV" ]; then
-                yq ".$applicationName| to_entries[] | .key + \" = \" + .value" $(Build.SourcesDirectory)/eis-configurations/"$BRANCH"_override.yml > $(Build.SourcesDirectory)/app/Config/override.properties
-              fi
-
-              if [ -f $(Build.SourcesDirectory)/app/Config/override.properties ]; then
-                override_path=$(Build.SourcesDirectory)/app/Config/override.properties
-              fi
-
-              if [ -s "$override_path" ]; then
-                ibmint package --input-path $(Build.SourcesDirectory)/app \
-                               --output-bar-file $(Build.BinariesDirectory)/$applicationName.bar \
-                               --java-version 8 \
-                               --overrides-file "$override_path"
-              else
-                ibmint package --input-path $(Build.SourcesDirectory)/app \
-                               --output-bar-file $(Build.BinariesDirectory)/$applicationName.bar \
-                               --java-version 8
-              fi
-
-              mqsireadbar -b $(Build.BinariesDirectory)/$applicationName.bar -r | grep "=" | sed -e 's/^[[:space:]]*//' > $(Build.SourcesDirectory)/app/Config/override.properties
-              cp $(Build.SourcesDirectory)/app/Config/* $(Build.BinariesDirectory)
-              cat "$config_path"
-
+              cp "$CONFIG_OUT" $(Build.BinariesDirectory)/config.yml
 
         - task: CopyFiles@2
           inputs:
@@ -214,7 +179,7 @@ stages:
             ArtifactName: drop
 
 
-# ================= RELEASE STAGE =================
+# ============== RELEASE STAGE ==============
 - stage: Release
   displayName: Deploy Stage
   pool:
@@ -246,7 +211,7 @@ stages:
                 artifact: drop
 
               - task: CmdLine@2
-                displayName: Deploying Bar File
+                displayName: Deploying BAR File
                 env:
                   BRANCH: $(Build.SourceBranchName)
                 inputs:
@@ -255,17 +220,65 @@ stages:
                     set -e
                     . /opt/IBM/ace/server/bin/mqsiprofile
 
-                    IntegrationNode=$(yq e ".IntegrationNode" config.yml)
                     ApplicationName=$(yq e ".ApplicationName" config.yml)
-                    IntegrationServer=$(yq e ".IntegrationServer" config.yml)
 
-                    for broker_file in /home/devops/broker/$BRANCH/$IntegrationNode*; do
-                      fname=$(basename "$broker_file")
-                      if [[ $fname =~ ^${IntegrationNode}_([0-9]+)\.broker$ ]]; then
-                        cat "$broker_file" | grep host | awk -F"\"" '{print "HOST: " $4 " , " "IntegrationNode: " $6}'
-                        ibmint deploy \
-                          --input-bar-file "$ApplicationName.bar" \
-                          --integration-node-file "$broker_file" \
-                          --output-server "$IntegrationServer"
+                    # ── Read IntegrationNode and IntegrationServer as space-separated lists ──
+                    NODES_RAW=$(yq e ".IntegrationNode"   config.yml)
+                    SERVERS_RAW=$(yq e ".IntegrationServer" config.yml)
+
+                    echo "ApplicationName   : $ApplicationName"
+                    echo "IntegrationNode(s): $NODES_RAW"
+                    echo "IntegrationServer(s): $SERVERS_RAW"
+
+                    # Convert space-separated strings to arrays
+                    IFS=' ' read -r -a NODES   <<< "$NODES_RAW"
+                    IFS=' ' read -r -a SERVERS <<< "$SERVERS_RAW"
+
+                    BROKER_BASE=/home/devops/broker/$BRANCH
+
+                    # ── Loop over every IntegrationNode ───────────────────────────────────
+                    for IntegrationNode in "${NODES[@]}"; do
+                      echo ""
+                      echo "=============================="
+                      echo "Processing Node: $IntegrationNode"
+                      echo "=============================="
+
+                      # Find all broker files matching this node
+                      BROKER_FILES=()
+                      for broker_file in "$BROKER_BASE"/${IntegrationNode}_*.broker; do
+                        [ -f "$broker_file" ] && BROKER_FILES+=("$broker_file")
+                      done
+
+                      if [ ${#BROKER_FILES[@]} -eq 0 ]; then
+                        echo "WARNING: No broker files found for node '$IntegrationNode' in $BROKER_BASE"
+                        continue
                       fi
-                    done
+
+                      for broker_file in "${BROKER_FILES[@]}"; do
+                        fname=$(basename "$broker_file")
+                        echo "Using broker file: $fname"
+                        cat "$broker_file" | grep host | awk -F'"' '{print "HOST: " $4 " , IntegrationNode: " $6}'
+
+                        # ── Determine target servers ──────────────────────────────────────
+                        # If IntegrationServer list is empty → deploy to ALL servers on this node
+                        if [ -z "$SERVERS_RAW" ] || [ "$SERVERS_RAW" = "null" ]; then
+                          echo "IntegrationServer is empty — deploying to ALL servers on node $IntegrationNode"
+                          ibmint deploy \
+                            --input-bar-file "$ApplicationName.bar" \
+                            --integration-node-file "$broker_file"
+                        else
+                          # Deploy only to each explicitly listed server
+                          for IntegrationServer in "${SERVERS[@]}"; do
+                            echo "  → Deploying to server: $IntegrationServer"
+                            ibmint deploy \
+                              --input-bar-file "$ApplicationName.bar" \
+                              --integration-node-file "$broker_file" \
+                              --output-server "$IntegrationServer"
+                          done
+                        fi
+
+                      done  # end broker_files loop
+                    done    # end nodes loop
+
+                    echo ""
+                    echo "Deployment complete."
