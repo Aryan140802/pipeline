@@ -200,6 +200,8 @@ stages:
     - deployment: DeployApp
       displayName: Deployment Job
       environment: $(Build.SourceBranchName)
+      pool:
+        name: TFS-RH-1
       workspace:
         clean: all
       strategy:
