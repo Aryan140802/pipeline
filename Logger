@@ -224,12 +224,17 @@ stages:
 
                     ApplicationName=$(yq e ".ApplicationName" config.yml)
 
-                    # ── Read IntegrationNode and IntegrationServer from config.yml ──
+                    # ── Read fields from config.yml ───────────────────────────
+                    # IntegrationNode  = ACE node name used for mqsilist + ibmint (e.g. PAYMENT_SYS)
+                    # BrokerPrefix     = broker file prefix to select which machine (e.g. PAYMENT_S59)
+                    # IntegrationServer = specific servers to deploy to (empty = all via mqsilist)
                     NODES_RAW=$(yq e ".IntegrationNode" config.yml)
+                    BROKERS_RAW=$(yq e ".BrokerPrefix // \"\"" config.yml)
                     SERVERS_RAW=$(yq e ".IntegrationServer // \"\"" config.yml | tr -d '[:space:]')
 
                     echo "ApplicationName     : $ApplicationName"
                     echo "IntegrationNode(s)  : $NODES_RAW"
+                    echo "BrokerPrefix(es)    : ${BROKERS_RAW:-<not set — will match all broker files for node>}"
                     echo "IntegrationServer(s): ${SERVERS_RAW:-<empty — will auto-detect via mqsilist>}"
 
                     # ── Validate IntegrationNode is present ───────────────────
@@ -238,8 +243,9 @@ stages:
                       exit 1
                     fi
 
-                    # Convert nodes to array
-                    IFS=' ' read -r -a NODES <<< "$NODES_RAW"
+                    # Convert to arrays
+                    IFS=' ' read -r -a NODES   <<< "$NODES_RAW"
+                    IFS=' ' read -r -a BROKERS <<< "$BROKERS_RAW"
 
                     BROKER_BASE=/home/devops/broker/$BRANCH
 
@@ -250,21 +256,45 @@ stages:
                       echo "Processing Node: $IntegrationNode"
                       echo "=============================="
 
-                      # Find all broker files for this node
+                      # ── Find broker files ─────────────────────────────────
+                      # If BrokerPrefix is set → match only those prefixes
+                      # If BrokerPrefix is empty → match ALL broker files for this node
                       BROKER_FILES=()
-                      for broker_file in "$BROKER_BASE"/${IntegrationNode}_*.broker; do
-                        [ -f "$broker_file" ] && BROKER_FILES+=("$broker_file")
-                      done
+
+                      if [ ${#BROKERS[@]} -gt 0 ] && [ -n "${BROKERS[0]}" ]; then
+                        # Specific broker prefix(es) requested
+                        for prefix in "${BROKERS[@]}"; do
+                          for broker_file in "$BROKER_BASE"/${prefix}_*.broker; do
+                            [ -f "$broker_file" ] && BROKER_FILES+=("$broker_file")
+                          done
+                        done
+                      else
+                        # No prefix filter — use all broker files that contain this IntegrationNode
+                        for broker_file in "$BROKER_BASE"/*.broker; do
+                          if [ -f "$broker_file" ]; then
+                            # Check if broker file belongs to this IntegrationNode
+                            node_in_file=$(grep -o "integrationNodeName=[^ ]*" "$broker_file" \
+                              | cut -d'=' -f2 | tr -d '"' | head -1)
+                            if [ "$node_in_file" = "$IntegrationNode" ]; then
+                              BROKER_FILES+=("$broker_file")
+                            fi
+                          fi
+                        done
+                      fi
 
                       if [ ${#BROKER_FILES[@]} -eq 0 ]; then
                         echo "WARNING: No broker files found for node '$IntegrationNode' in $BROKER_BASE"
                         continue
                       fi
 
+                      echo "Broker files to use:"
+                      for f in "${BROKER_FILES[@]}"; do echo "  $(basename $f)"; done
+
                       # ── Resolve servers: config value OR mqsilist fallback ──
                       if [ -z "$SERVERS_RAW" ] || [ "$SERVERS_RAW" = "null" ]; then
+                        echo ""
                         echo "IntegrationServer is empty — querying live servers via mqsilist..."
-                        MQSI_SERVERS=$(mqsilist "$IntegrationNode" | awk -F"'" '{print $2}' | grep -v '^$')
+                        MQSI_SERVERS=$(mqsilist "$IntegrationNode" | awk -F"'" '{print $2}' | grep -v '^$' | tail -n +2)
                         if [ -z "$MQSI_SERVERS" ]; then
                           echo "ERROR: No integration servers found on node '$IntegrationNode' via mqsilist"
                           exit 1
