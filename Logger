@@ -196,7 +196,7 @@ stages:
   jobs:
     - deployment: DeployApp
       displayName: Deployment Job
-      environment: $(Build.SourceBranchName)
+      environment: Test
       pool:
         name: TFS-RH-1
       workspace:
