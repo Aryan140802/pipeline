@@ -1,3 +1,184 @@
+parameters:
+  - name: applicationName
+    type: string
+    default: ''
+
+stages:
+# ============== VALIDATION STAGE ==============
+- stage: Validation_Stage
+  displayName: Validation and Initialization
+  pool:
+    name: TFS-RH-1
+  jobs:
+    - job: Validation_Job
+      displayName: Validation
+      workspace:
+        clean: all
+      steps:
+
+        - checkout: self
+          path: s/app
+
+        - checkout: git://devops_testing/eis-configuration@refs/heads/config
+          path: s/eis-configurations
+
+        - task: CmdLine@2
+          name: val_task
+          env:
+            BRANCH: $(Build.SourceBranchName)
+          displayName: Validating repository
+          inputs:
+            script: |
+              set -e
+
+              # ── Resolve application name ──────────────────────────────────────
+              if [ -z "${{ parameters.applicationName }}" ]; then
+                applicationName=$(ls -1 $(Build.SourcesDirectory)/app \
+                  | grep -vE "Config|README.md|azure-pipelines.yml" \
+                  | tail -n 1)
+              else
+                applicationName="${{ parameters.applicationName }}"
+              fi
+              echo "Application name : $applicationName"
+              echo "Branch           : $BRANCH"
+
+              # ── Skip deploy logic for main branch ────────────────────────────
+              if [ "$BRANCH" = "main" ]; then
+                echo "Branch is 'main' — skipping deploy"
+                echo "##vso[task.setvariable variable=DeployFlag;isOutput=true]false"
+                exit 0
+              fi
+
+              # ── Ensure Config directory exists ───────────────────────────────
+              mkdir -p $(Build.SourcesDirectory)/app/Config
+
+              # ── Pull config from eis-configurations for this branch ──────────
+              EIS_CONFIG=$(Build.SourcesDirectory)/eis-configurations/"$BRANCH"_config.yml
+              CONFIG_OUT=$(Build.SourcesDirectory)/app/Config/config.yml
+
+              echo "Reading from EIS config: $EIS_CONFIG"
+              yq e ".$applicationName | select(. != null)" "$EIS_CONFIG" > "$CONFIG_OUT"
+
+              if [ ! -s "$CONFIG_OUT" ]; then
+                echo "ERROR: No entry found for '$applicationName' in $EIS_CONFIG"
+                exit 1
+              fi
+
+              echo "--- Resolved config ---"
+              cat "$CONFIG_OUT"
+              echo "-----------------------"
+
+              # ── Validate required fields ─────────────────────────────────────
+              for field in IntegrationNode IntegrationServer; do
+                value=$(yq e ".$field // \"\"" "$CONFIG_OUT" | tr -d '[:space:]')
+                # IntegrationServer is allowed to be empty (deploy everywhere)
+                if [ "$field" = "IntegrationNode" ] && [ -z "$value" ]; then
+                  echo "ERROR: $field is missing or empty"
+                  exit 1
+                fi
+              done
+
+              # ── Resolve Deploy flag (default = true) ─────────────────────────
+              DEPLOY=$(yq e ".Deploy // \"true\"" "$CONFIG_OUT" | tr -d '[:space:]')
+              if [ "$DEPLOY" = "false" ] || [ "$DEPLOY" = "False" ]; then
+                DEPLOY="false"
+              else
+                DEPLOY="true"
+              fi
+
+              echo "Deploy flag: $DEPLOY"
+              echo "##vso[task.setvariable variable=DeployFlag;isOutput=true]$DEPLOY"
+
+              cp "$CONFIG_OUT" $(Build.ArtifactStagingDirectory)/config.yml
+
+        - task: PublishBuildArtifacts@1
+          condition: always()
+          inputs:
+            PathtoPublish: $(Build.ArtifactStagingDirectory)
+            ArtifactName: drop
+
+
+# ============== BUILD STAGE ==============
+- stage: Build
+  displayName: Build Stage
+  dependsOn: Validation_Stage
+  pool:
+    name: TFS-RH-1
+  condition: succeeded('Validation_Stage')
+  jobs:
+    - job: Build_Job
+      displayName: Agent Build Job
+      workspace:
+        clean: all
+      steps:
+
+        - checkout: self
+          path: s/app
+
+        - checkout: git://devops_testing/eis-configuration@refs/heads/config
+          path: s/eis-configurations
+
+        - task: CmdLine@2
+          displayName: Building BAR file
+          env:
+            BRANCH: $(Build.SourceBranchName)
+          inputs:
+            script: |
+              set -e
+              . /opt/IBM/ace/server/bin/mqsiprofile
+
+              # ── Resolve application name ──────────────────────────────────────
+              if [ -z "${{ parameters.applicationName }}" ]; then
+                applicationName=$(ls -1 $(Build.SourcesDirectory)/app \
+                  | grep -vE "Config|README.md|azure-pipelines.yml" \
+                  | tail -n 1)
+              else
+                applicationName="${{ parameters.applicationName }}"
+              fi
+
+              mkdir -p $(Build.SourcesDirectory)/app/Config
+
+              # ── For main branch: build only, no config ────────────────────────
+              if [ "$BRANCH" = "main" ]; then
+                echo "Branch is 'main' — building without config"
+                ibmint package \
+                  --input-path $(Build.SourcesDirectory)/app \
+                  --output-bar-file $(Build.BinariesDirectory)/$applicationName.bar \
+                  --java-version 8
+                exit 0
+              fi
+
+              # ── Pull config from eis-configurations ──────────────────────────
+              EIS_CONFIG=$(Build.SourcesDirectory)/eis-configurations/"$BRANCH"_config.yml
+              CONFIG_OUT=$(Build.SourcesDirectory)/app/Config/config.yml
+
+              yq e ".$applicationName | select(. != null)" "$EIS_CONFIG" > "$CONFIG_OUT"
+              yq -i ".ApplicationName = \"$applicationName\"" "$CONFIG_OUT"
+
+              echo "--- Config used for build ---"
+              cat "$CONFIG_OUT"
+              echo "-----------------------------"
+
+              # ── Build BAR (no overrides) ──────────────────────────────────────
+              ibmint package \
+                --input-path $(Build.SourcesDirectory)/app \
+                --output-bar-file $(Build.BinariesDirectory)/$applicationName.bar \
+                --java-version 8
+
+              cp "$CONFIG_OUT" $(Build.BinariesDirectory)/config.yml
+
+        - task: CopyFiles@2
+          inputs:
+            SourceFolder: $(Build.BinariesDirectory)
+            TargetFolder: $(Build.ArtifactStagingDirectory)
+            OverWrite: true
+
+        - task: PublishBuildArtifacts@1
+          inputs:
+            PathtoPublish: $(Build.ArtifactStagingDirectory)
+            ArtifactName: drop
+
+
 # ============== RELEASE STAGE ==============
 - stage: Release
   displayName: Deploy Stage
