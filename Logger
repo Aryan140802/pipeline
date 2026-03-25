@@ -225,16 +225,13 @@ stages:
                     ApplicationName=$(yq e ".ApplicationName" config.yml)
 
                     # ── Read fields from config.yml ───────────────────────────
-                    # IntegrationNode  = ACE node name used for mqsilist + ibmint (e.g. PAYMENT_SYS)
-                    # BrokerPrefix     = broker file prefix to select which machine (e.g. PAYMENT_S59)
-                    # IntegrationServer = specific servers to deploy to (empty = all via mqsilist)
+                    # IntegrationNode   = ACE node name matched inside broker XML (e.g. PAYMENT_SYS)
+                    # IntegrationServer = specific servers to deploy to (empty = all via mqsilist -n)
                     NODES_RAW=$(yq e ".IntegrationNode" config.yml)
-                    BROKERS_RAW=$(yq e ".BrokerPrefix // \"\"" config.yml)
                     SERVERS_RAW=$(yq e ".IntegrationServer // \"\"" config.yml | tr -d '[:space:]')
 
                     echo "ApplicationName     : $ApplicationName"
                     echo "IntegrationNode(s)  : $NODES_RAW"
-                    echo "BrokerPrefix(es)    : ${BROKERS_RAW:-<not set — will match all broker files for node>}"
                     echo "IntegrationServer(s): ${SERVERS_RAW:-<empty — will auto-detect via mqsilist>}"
 
                     # ── Validate IntegrationNode is present ───────────────────
@@ -243,9 +240,8 @@ stages:
                       exit 1
                     fi
 
-                    # Convert to arrays
-                    IFS=' ' read -r -a NODES   <<< "$NODES_RAW"
-                    IFS=' ' read -r -a BROKERS <<< "$BROKERS_RAW"
+                    # Convert nodes to array
+                    IFS=' ' read -r -a NODES <<< "$NODES_RAW"
 
                     BROKER_BASE=/home/devops/broker/$BRANCH
 
@@ -256,62 +252,55 @@ stages:
                       echo "Processing Node: $IntegrationNode"
                       echo "=============================="
 
-                      # ── Find broker files ─────────────────────────────────
-                      # If BrokerPrefix is set → match only those prefixes
-                      # If BrokerPrefix is empty → match ALL broker files for this node
+                      # ── Scan ALL broker files, match integrationNodeName in XML ──
                       BROKER_FILES=()
-
-                      if [ ${#BROKERS[@]} -gt 0 ] && [ -n "${BROKERS[0]}" ]; then
-                        # Specific broker prefix(es) requested
-                        for prefix in "${BROKERS[@]}"; do
-                          for broker_file in "$BROKER_BASE"/${prefix}_*.broker; do
-                            [ -f "$broker_file" ] && BROKER_FILES+=("$broker_file")
-                          done
-                        done
-                      else
-                        # No prefix filter — use all broker files that contain this IntegrationNode
-                        for broker_file in "$BROKER_BASE"/*.broker; do
-                          if [ -f "$broker_file" ]; then
-                            # Check if broker file belongs to this IntegrationNode
-                            node_in_file=$(grep -o "integrationNodeName=[^ ]*" "$broker_file" \
-                              | cut -d'=' -f2 | tr -d '"' | head -1)
-                            if [ "$node_in_file" = "$IntegrationNode" ]; then
-                              BROKER_FILES+=("$broker_file")
-                            fi
+                      for broker_file in "$BROKER_BASE"/*.broker; do
+                        if [ -f "$broker_file" ]; then
+                          node_in_file=$(grep -o 'integrationNodeName="[^"]*"' "$broker_file" \
+                            | awk -F'"' '{print $2}' | head -1)
+                          if [ "$node_in_file" = "$IntegrationNode" ]; then
+                            BROKER_FILES+=("$broker_file")
                           fi
-                        done
-                      fi
+                        fi
+                      done
 
                       if [ ${#BROKER_FILES[@]} -eq 0 ]; then
-                        echo "WARNING: No broker files found for node '$IntegrationNode' in $BROKER_BASE"
+                        echo "WARNING: No broker files found with integrationNodeName='$IntegrationNode' in $BROKER_BASE"
                         continue
                       fi
 
-                      echo "Broker files to use:"
+                      echo "Broker files matched for '$IntegrationNode':"
                       for f in "${BROKER_FILES[@]}"; do echo "  $(basename $f)"; done
 
-                      # ── Resolve servers: config value OR mqsilist fallback ──
+                      # ── Resolve servers: config value OR mqsilist per broker file ──
                       if [ -z "$SERVERS_RAW" ] || [ "$SERVERS_RAW" = "null" ]; then
-                        echo ""
-                        echo "IntegrationServer is empty — querying live servers via mqsilist..."
-                        MQSI_SERVERS=$(mqsilist "$IntegrationNode" | awk -F"'" '{print $2}' | grep -v '^$' | tail -n +2)
-                        if [ -z "$MQSI_SERVERS" ]; then
-                          echo "ERROR: No integration servers found on node '$IntegrationNode' via mqsilist"
-                          exit 1
-                        fi
-                        echo "Servers found on '$IntegrationNode':"
-                        echo "$MQSI_SERVERS"
-                        IFS=$'\n' read -r -d '' -a SERVERS <<< "$MQSI_SERVERS" || true
+                        USE_MQSILIST=true
                       else
+                        USE_MQSILIST=false
                         IFS=' ' read -r -a SERVERS <<< "$SERVERS_RAW"
                       fi
 
-                      # ── Loop over each broker file ────────────────────────
+                      # ── Loop over each matched broker file ────────────────────
                       for broker_file in "${BROKER_FILES[@]}"; do
                         fname=$(basename "$broker_file")
                         echo ""
                         echo "Using broker file: $fname"
-                        cat "$broker_file" | grep host | awk -F'"' '{print "HOST: " $4 " , IntegrationNode: " $6}'
+                        grep -o 'host="[^"]*"' "$broker_file" | awk -F'"' '{print "HOST: " $2}'
+                        grep -o 'integrationNodeName="[^"]*"' "$broker_file" | awk -F'"' '{print "IntegrationNode: " $2}'
+
+                        # ── If no servers in config, query via mqsilist using broker file ──
+                        if [ "$USE_MQSILIST" = true ]; then
+                          echo ""
+                          echo "IntegrationServer is empty — querying live servers via mqsilist -n $fname..."
+                          MQSI_SERVERS=$(mqsilist -n "$broker_file" | awk -F"'" '{print $2}' | grep -v '^$' | tail -n +2)
+                          if [ -z "$MQSI_SERVERS" ]; then
+                            echo "ERROR: No integration servers found via mqsilist for '$fname'"
+                            exit 1
+                          fi
+                          echo "Servers found:"
+                          echo "$MQSI_SERVERS"
+                          IFS=$'\n' read -r -d '' -a SERVERS <<< "$MQSI_SERVERS" || true
+                        fi
 
                         # ── Deploy to each IntegrationServer ─────────────────
                         for IntegrationServer in "${SERVERS[@]}"; do
