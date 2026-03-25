@@ -226,25 +226,20 @@ stages:
 
                     # ── Read IntegrationNode and IntegrationServer from config.yml ──
                     NODES_RAW=$(yq e ".IntegrationNode" config.yml)
-                    SERVERS_RAW=$(yq e ".IntegrationServer" config.yml)
+                    SERVERS_RAW=$(yq e ".IntegrationServer // \"\"" config.yml | tr -d '[:space:]')
 
                     echo "ApplicationName     : $ApplicationName"
                     echo "IntegrationNode(s)  : $NODES_RAW"
-                    echo "IntegrationServer(s): $SERVERS_RAW"
+                    echo "IntegrationServer(s): ${SERVERS_RAW:-<empty — will auto-detect via mqsilist>}"
 
-                    # ── Validate both fields are present ──────────────────────
+                    # ── Validate IntegrationNode is present ───────────────────
                     if [ -z "$NODES_RAW" ] || [ "$NODES_RAW" = "null" ]; then
                       echo "ERROR: IntegrationNode is missing in config.yml"
                       exit 1
                     fi
-                    if [ -z "$SERVERS_RAW" ] || [ "$SERVERS_RAW" = "null" ]; then
-                      echo "ERROR: IntegrationServer is missing in config.yml — must specify at least one server"
-                      exit 1
-                    fi
 
-                    # Convert space-separated strings to arrays
-                    IFS=' ' read -r -a NODES   <<< "$NODES_RAW"
-                    IFS=' ' read -r -a SERVERS <<< "$SERVERS_RAW"
+                    # Convert nodes to array
+                    IFS=' ' read -r -a NODES <<< "$NODES_RAW"
 
                     BROKER_BASE=/home/devops/broker/$BRANCH
 
@@ -264,6 +259,21 @@ stages:
                       if [ ${#BROKER_FILES[@]} -eq 0 ]; then
                         echo "WARNING: No broker files found for node '$IntegrationNode' in $BROKER_BASE"
                         continue
+                      fi
+
+                      # ── Resolve servers: config value OR mqsilist fallback ──
+                      if [ -z "$SERVERS_RAW" ] || [ "$SERVERS_RAW" = "null" ]; then
+                        echo "IntegrationServer is empty — querying live servers via mqsilist..."
+                        MQSI_SERVERS=$(mqsilist "$IntegrationNode" | awk -F"'" '{print $2}' | grep -v '^$')
+                        if [ -z "$MQSI_SERVERS" ]; then
+                          echo "ERROR: No integration servers found on node '$IntegrationNode' via mqsilist"
+                          exit 1
+                        fi
+                        echo "Servers found on '$IntegrationNode':"
+                        echo "$MQSI_SERVERS"
+                        IFS=$'\n' read -r -d '' -a SERVERS <<< "$MQSI_SERVERS" || true
+                      else
+                        IFS=' ' read -r -a SERVERS <<< "$SERVERS_RAW"
                       fi
 
                       # ── Loop over each broker file ────────────────────────
