@@ -53,13 +53,13 @@ stages:
               if [ -s $(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml ]; then
                 echo "IN config_eis_configuration.yml"
                 config_path=$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml
-                cp "$config_path" $(Build.ArtifactStagingDirectory)
+                cp "$config_path" $(Build.ArtifactStagingDirectory)/config.yml
               elif [ -s $(Build.SourcesDirectory)/app/Config/config.yml ]; then
                 echo "IN config.yml"
                 yq e ".$BRANCH" $(Build.SourcesDirectory)/app/Config/config.yml > $(Build.SourcesDirectory)/app/Config/temp.yml && mv $(Build.SourcesDirectory)/app/Config/temp.yml $(Build.SourcesDirectory)/app/Config/config.yml
                 config_path=$(Build.SourcesDirectory)/app/Config/config.yml
                 cat "$config_path"
-                cp "$config_path" $(Build.ArtifactStagingDirectory)
+                cp "$config_path" $(Build.ArtifactStagingDirectory)/config.yml
               else
                 echo "ERROR: config.yml not found"
                 exit 1
@@ -104,7 +104,7 @@ stages:
 
 
         - task: PublishBuildArtifacts@1
-          condition: eq(variables['val_task.DeployFlag'], 'false')
+          condition: always()
           inputs:
             PathtoPublish: $(Build.ArtifactStagingDirectory)
             ArtifactName: drop
@@ -156,16 +156,6 @@ stages:
                 mkdir -p $(Build.SourcesDirectory)/app/Config
               fi
 
-              yq e ".$applicationName" $(Build.SourcesDirectory)/eis-configurations/"$BRANCH"_config.yml > $(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml
-
-              if [ -s $(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml ]; then
-                cat "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml" > $(Build.SourcesDirectory)/app/Config/config.yml
-                rm $(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml
-              fi
-
-              config_path=$(Build.SourcesDirectory)/app/Config/config.yml
-              yq -i ".ApplicationName = \"$applicationName\"" "$config_path"
-
               if [ "$BRANCH" != "DEV" ]; then
                 yq ".$applicationName| to_entries[] | .key + \" = \" + .value" $(Build.SourcesDirectory)/eis-configurations/"$BRANCH"_override.yml > $(Build.SourcesDirectory)/app/Config/override.properties
               fi
@@ -186,8 +176,7 @@ stages:
               fi
 
               mqsireadbar -b $(Build.BinariesDirectory)/$applicationName.bar -r | grep "=" | sed -e 's/^[[:space:]]*//' > $(Build.SourcesDirectory)/app/Config/override.properties
-              cp $(Build.SourcesDirectory)/app/Config/* $(Build.BinariesDirectory)
-              cat "$config_path"
+              cp $(Build.SourcesDirectory)/app/Config/override.properties $(Build.BinariesDirectory)
 
 
         - task: CopyFiles@2
