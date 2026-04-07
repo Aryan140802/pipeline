@@ -26,10 +26,23 @@ stages:
             script: |
               set -e
 
+              # applicationName is derived from the repo folder name (single app per repo)
+              # This also acts as the key to look up in DEV_config.yml
               applicationName=$(ls -1 $(Build.SourcesDirectory)/app | grep -vE "Config|README.md|azure-pipelines.yml" | tail -n 1)
+
+              # FIX 2: Fail early in Validation if ApplicationName cannot be determined
+              if [ -z "$applicationName" ] || [ "$applicationName" = "null" ]; then
+                echo "ERROR: Could not determine ApplicationName from repository folder structure"
+                exit 1
+              fi
+
               echo "Application name : $applicationName"
               echo "branch: $BRANCH"
               echo "DONE 1"
+
+              # FIX 1: Save applicationName to artifact drop for use in Release stage
+              # This replaces reading ApplicationName from config.yml (which caused null.bar)
+              echo "$applicationName" > $(Build.ArtifactStagingDirectory)/appname.txt
 
               # Skip config validation for main branch (e.g. PR targeting main)
               # Build will still proceed; Deploy and Cache are disabled for main
@@ -99,6 +112,38 @@ stages:
                 exit 1
               fi
 
+              # FIX 3: Cache=true + Deploy=false → build BAR here in Validation
+              # so the Cache stage gets the artifact without needing the Build stage to run
+              if [ "$CACHE_PRESENT" = "true" ] && [ "$DEPLOY" = "false" ]; then
+                echo "Cache-only flow detected: building BAR file in Validation stage"
+                . /opt/IBM/ace/server/bin/mqsiprofile
+
+                override_path=""
+                if [ "$BRANCH" != "DEV" ]; then
+                  yq ".$applicationName | to_entries[] | .key + \" = \" + .value" \
+                    $(Build.SourcesDirectory)/eis-configurations/"$BRANCH"_override.yml \
+                    > $(Build.SourcesDirectory)/app/Config/override.properties
+                fi
+
+                if [ -f $(Build.SourcesDirectory)/app/Config/override.properties ] && \
+                   [ -s $(Build.SourcesDirectory)/app/Config/override.properties ]; then
+                  override_path=$(Build.SourcesDirectory)/app/Config/override.properties
+                fi
+
+                if [ -n "$override_path" ]; then
+                  ibmint package --input-path $(Build.SourcesDirectory)/app \
+                                 --output-bar-file $(Build.ArtifactStagingDirectory)/$applicationName.bar \
+                                 --java-version 8 \
+                                 --overrides-file "$override_path"
+                else
+                  ibmint package --input-path $(Build.SourcesDirectory)/app \
+                                 --output-bar-file $(Build.ArtifactStagingDirectory)/$applicationName.bar \
+                                 --java-version 8
+                fi
+
+                echo "BAR file built successfully in Validation stage for Cache-only flow"
+              fi
+
               echo "##vso[task.setvariable variable=DeployFlag;isOutput=true]$DEPLOY"
               echo "##vso[task.setvariable variable=CacheFlag;isOutput=true]$CACHE_PRESENT"
 
@@ -117,7 +162,19 @@ stages:
   pool:
     name: TFS-RH-1
 
-  condition: succeeded('Validation_Stage')
+  # FIX 3: Only run Build stage when Deploy=true (or main branch)
+  # Cache-only flows already built the BAR in Validation stage
+  condition: |
+    and(
+      succeeded('Validation_Stage'),
+      or(
+        eq(variables['Build.SourceBranchName'], 'main'),
+        eq(
+          dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'],
+          'true'
+        )
+      )
+    )
 
   jobs:
     - job: Build_Job
@@ -232,8 +289,23 @@ stages:
                     set -e
                     . /opt/IBM/ace/server/bin/mqsiprofile
 
+                    # FIX 1 & 2: Read ApplicationName from appname.txt saved in Validation
+                    # Replaces yq e ".ApplicationName" config.yml which produced null.bar
+                    if [ ! -f appname.txt ]; then
+                      echo "ERROR: appname.txt not found in artifact drop. ApplicationName could not be determined."
+                      exit 1
+                    fi
+
+                    ApplicationName=$(cat appname.txt | tr -d '[:space:]')
+
+                    if [ -z "$ApplicationName" ] || [ "$ApplicationName" = "null" ]; then
+                      echo "ERROR: ApplicationName is empty or null in appname.txt"
+                      exit 1
+                    fi
+
+                    echo "Deploying application: $ApplicationName"
+
                     IntegrationNode=$(yq e ".IntegrationNode" config.yml)
-                    ApplicationName=$(yq e ".ApplicationName" config.yml)
                     IntegrationServer=$(yq e ".IntegrationServer" config.yml)
 
                     for broker_file in /home/devops/broker/$BRANCH/$IntegrationNode*; do
