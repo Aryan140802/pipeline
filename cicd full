@@ -207,32 +207,19 @@ stages:
             PathtoPublish: $(Build.ArtifactStagingDirectory)
             ArtifactName: drop
 
-    - job: Display_Override_Properties
-      displayName: Display Override Properties
-
-      dependsOn: Build_Job
-      steps:
-        - download: current
-          artifact: drop
         - task: CmdLine@2
           displayName: Display override.properties
-          condition : always()
+          condition: always()
           inputs:
             script: |
-              set -e
-              echo "========== Searching override.properties =========="
-              find "$(Pipeline.Workspace)/drop" -name "override.properties" -exec echo "Found: {}" \;
-
-              OVERRIDE_FILE="$(Pipeline.Workspace)/drop/override.properties"
+              OVERRIDE_FILE="$(Build.BinariesDirectory)/override.properties"
               if [ -f "$OVERRIDE_FILE" ]; then
-                echo "========== override.properties contents =========="
+                echo "=========override.properties contents ========="
                 cat "$OVERRIDE_FILE"
-                echo "=================================================="
+                echo "==============================================="
               else
-                echo "WARNING: override.properties not found, listing drop artifact contents:"
-                find "$(Pipeline.Workspace)/drop" -type f
+                echo "ERROR : override.properties not found at $OVERRIDE_FILE" 
               fi
-
 
 # ================= RELEASE STAGE =================
 - stage: Release
@@ -250,10 +237,10 @@ stages:
     
     - deployment: DeployApp
       displayName: Deployment Job
-      dependsOn: Approve_Deployment
       environment: $(Build.SourceBranchName)
       workspace:
         clean: all
+
       strategy:
         runOnce:
           deploy:
