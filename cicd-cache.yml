@@ -1,112 +1,66 @@
-# ================= BUILD STAGE =================
-- stage: Build
-  displayName: Build Stage
-  dependsOn: Validation_Stage
-  pool:
-    name: TFS-RH-1
-  condition: succeeded('Validation_Stage')
-
+- stage: Release
+  displayName: Deploy Stage
+  dependsOn:
+    - Validation_Stage
+    - Build
+  condition: |
+    and(
+      succeeded('Build'),
+      eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'], 'true'),
+      ne(variables['Build.SourceBranchName'], 'main')
+    )
   jobs:
-    - job: Build_Job
-      displayName: Agent Build job
-      workspace:
-        clean: all
-
-      steps:
-
-        - checkout: self
-          path: s/app
-
-        - checkout: git://devops_testing/eis-configuration@refs/heads/config
-          path: s/eis-configurations
-
-        - task: CmdLine@2
-          displayName: Building Bar file
-          env:
-            BRANCH: $(Build.SourceBranchName)
-          inputs:
-            script: |
-              set -e
-              . /opt/IBM/ace/server/bin/mqsiprofile
-
-              applicationName=$(ls -1 "$(Build.SourcesDirectory)/app" | grep -vE "Config|README.md|azure-pipelines.yml" | tail -n 1)
-
-              mkdir -p "$(Build.SourcesDirectory)/app/Config"
-
-              yq e ".$applicationName | select(. !=null)" \
-                "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_config.yml" \
-                > "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
-
-              if [ -s "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml" ]; then
-                config_path="$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
-                yq -i ".ApplicationName = \"$applicationName\"" "$config_path"
-                cp "$config_path" "$(Build.BinariesDirectory)/config.yml"
-              else
-                yq e ".$BRANCH" "$(Build.SourcesDirectory)/app/Config/config.yml" \
-                  > "$(Build.SourcesDirectory)/app/Config/temp.yml" &&
-                mv "$(Build.SourcesDirectory)/app/Config/temp.yml" "$(Build.SourcesDirectory)/app/Config/config.yml"
-                config_path="$(Build.SourcesDirectory)/app/Config/config.yml"
-                yq -i ".ApplicationName = \"$applicationName\"" "$config_path"
-                cp "$config_path" "$(Build.BinariesDirectory)/config.yml"
-              fi
-
-              override_path=""
-              if [ -f "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml" ]; then
-                yq ".$applicationName | to_entries[] | .key + \" = \" + .value" \
-                  "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml" \
-                  > "$(Build.SourcesDirectory)/app/Config/override.properties"
-                override_path="$(Build.SourcesDirectory)/app/Config/override.properties"
-              fi
-
-              if [ -s "$override_path" ]; then
-                ibmint package \
-                  --input-path "$(Build.SourcesDirectory)/app" \
-                  --output-bar-file "$(Build.BinariesDirectory)/$applicationName.bar" \
-                  --java-version 8 \
-                  --overrides-file "$override_path"
-              else
-                ibmint package \
-                  --input-path "$(Build.SourcesDirectory)/app" \
-                  --output-bar-file "$(Build.BinariesDirectory)/$applicationName.bar" \
-                  --java-version 8
-              fi
-
-              mqsireadbar -b "$(Build.BinariesDirectory)/$applicationName.bar" -r \
-                | grep "=" | sed -e 's/^[[:space:]]*//' \
-                > "$(Build.BinariesDirectory)/override.properties"
-
-
-        - task: CopyFiles@2
-          inputs:
-            SourceFolder: $(Build.BinariesDirectory)
-            TargetFolder: $(Build.ArtifactStagingDirectory)
-            OverWrite: true
-
-        - task: PublishBuildArtifacts@1
-          inputs:
-            PathtoPublish: $(Build.ArtifactStagingDirectory)
-            ArtifactName: drop
-
-    - job: Display_Override_Properties
+    - job: Show_Properties_For_Approval
       displayName: Display Override Properties
-      dependsOn: AgentBuildJob
       steps:
         - download: current
           artifact: drop
         - task: CmdLine@2
-          displayName: Display override.properties
+          displayName: Read override.properties
+          name: read_props
           inputs:
             script: |
-              set -e
-              echo "========== Searching override.properties =========="
-              find "$(Pipeline.Workspace)/drop" -name "override.properties" -exec echo "Found: {}" \;
-
               OVERRIDE_FILE="$(Pipeline.Workspace)/drop/override.properties"
               if [ -f "$OVERRIDE_FILE" ]; then
-                echo "========== override.properties contents =========="
-                cat "$OVERRIDE_FILE"
-                echo "=================================================="
+                CONTENT=$(cat "$OVERRIDE_FILE")
+                echo "##vso[task.setvariable variable=OverrideContent;isOutput=true]$CONTENT"
               else
-                echo "WARNING: override.properties not found, listing drop artifact contents:"
-                find "$(Pipeline.Workspace)/drop" -type f
+                echo "##vso[task.setvariable variable=OverrideContent;isOutput=true]override.properties not found"
               fi
+
+    - job: Approve_Deployment
+      displayName: Approve Deployment
+      dependsOn: Show_Properties_For_Approval
+      variables:
+        propsContent: $[ dependencies.Show_Properties_For_Approval.outputs['read_props.OverrideContent'] ]
+      steps:
+        - task: ManualValidation@0
+          displayName: Review Override Properties Before Deployment
+          inputs:
+            notifyUsers: |
+              $(Build.RequestedForEmail)
+            instructions: |
+              ============================================
+              Please review the override properties below
+              before approving the deployment to $(Build.SourceBranchName):
+              ============================================
+
+              $(propsContent)
+
+              ============================================
+              Approve only if the above values are correct
+              ============================================
+            onTimeout: reject
+            timeout: 1440  # 24 hours in minutes
+
+    - deployment: DeployApp
+      displayName: Deployment Job
+      dependsOn: Approve_Deployment
+      environment: $(Build.SourceBranchName)
+      workspace:
+        clean: all
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+              # ... your existing deploy steps unchanged ...
