@@ -1,25 +1,19 @@
 stages:
-
 # ============== Validation and Initialization ============
 - stage: Validation_Stage
   displayName: Validation and Intialization
   pool:
     name: TFS-RH-1
-
   jobs:
     - job: Validation_Job
       displayName: Validation
       workspace:
         clean: all
-
       steps:
-
         - checkout: self
           path: s/app
-
         - checkout: git://devops_testing/eis-configuration@refs/heads/config
           path: s/eis-configurations
-
         - task: CmdLine@2
           name: val_task
           env:
@@ -28,7 +22,6 @@ stages:
           inputs:
             script: |
               set -e
-
               applicationName=$(ls -1 "$(Build.SourcesDirectory)/app" | grep -vE "Config|README.md|azure-pipelines.yml" | tail -n 1)
               echo "Application name : $applicationName"
               echo "branch: $BRANCH"
@@ -39,6 +32,33 @@ stages:
                 echo "##vso[task.setvariable variable=CacheFlag;isOutput=true]false"
                 exit 0
               fi
+
+              # ── Duplicate key check across _config and _override files ──────────
+              CONFIG_FILE="$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_config.yml"
+              OVERRIDE_FILE="$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml"
+
+              KEY_IN_CONFIG=false
+              KEY_IN_OVERRIDE=false
+
+              if [ -f "$CONFIG_FILE" ]; then
+                if yq e "has(\"$applicationName\")" "$CONFIG_FILE" | grep -q "^true$"; then
+                  KEY_IN_CONFIG=true
+                  echo "Key '$applicationName' found in ${BRANCH}_config.yml"
+                fi
+              fi
+
+              if [ -f "$OVERRIDE_FILE" ]; then
+                if yq e "has(\"$applicationName\")" "$OVERRIDE_FILE" | grep -q "^true$"; then
+                  KEY_IN_OVERRIDE=true
+                  echo "Key '$applicationName' found in ${BRANCH}_override.yml"
+                fi
+              fi
+
+              if [ "$KEY_IN_CONFIG" = "true" ] && [ "$KEY_IN_OVERRIDE" = "true" ]; then
+                echo "ERROR: Duplicate key '$applicationName' found in both '${BRANCH}_config.yml' and '${BRANCH}_override.yml'. Remove it from one of the files."
+                exit 1
+              fi
+              # ────────────────────────────────────────────────────────────────────
 
               if [ ! -d "$(Build.SourcesDirectory)/app/Config" ]; then
                 mkdir -p "$(Build.SourcesDirectory)/app/Config"
@@ -64,7 +84,6 @@ stages:
                 IntegrationNode
                 IntegrationServer
               )
-
               for field in "${REQUIRED_FIELDS[@]}"; do
                 value=$(yq e ".$field // \"\"" "$config_path" | tr -d '[:space:]')
                 if [ -z "$value" ]; then
