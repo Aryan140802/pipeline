@@ -1,7 +1,14 @@
-- job: Display_Override_Properties
+- stage: Build
+  displayName: Build Stage
+  jobs:
+    - job: AgentBuildJob
+      displayName: Agent Build job
+      steps:
+        # ... your existing build steps ...
+
+    - job: Display_Override_Properties
       displayName: Display Override Properties
-      workspace:
-        clean: all
+      dependsOn: AgentBuildJob
       steps:
         - download: current
           artifact: drop
@@ -12,7 +19,7 @@
               set -e
               echo "========== Searching override.properties =========="
               find "$(Pipeline.Workspace)/drop" -name "override.properties" -exec echo "Found: {}" \;
-              
+
               OVERRIDE_FILE="$(Pipeline.Workspace)/drop/override.properties"
               if [ -f "$OVERRIDE_FILE" ]; then
                 echo "========== override.properties contents =========="
