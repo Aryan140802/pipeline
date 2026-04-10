@@ -1,18 +1,4 @@
-- stage: Release
-  displayName: Deploy Stage
-  pool:
-    name: TFS-RH-1
-  dependsOn:
-    - Validation_Stage
-    - Build
-  condition: |
-    and(
-      succeeded('Build'),
-      eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'], 'true'),
-      ne(variables['Build.SourceBranchName'], 'main')
-    )
-  jobs:
-    - job: Display_Override_Properties
+- job: Display_Override_Properties
       displayName: Display Override Properties
       workspace:
         clean: all
@@ -24,70 +10,15 @@
           inputs:
             script: |
               set -e
+              echo "========== Searching override.properties =========="
+              find "$(Pipeline.Workspace)/drop" -name "override.properties" -exec echo "Found: {}" \;
+              
               OVERRIDE_FILE="$(Pipeline.Workspace)/drop/override.properties"
               if [ -f "$OVERRIDE_FILE" ]; then
                 echo "========== override.properties contents =========="
                 cat "$OVERRIDE_FILE"
                 echo "=================================================="
               else
-                echo "ERROR: override.properties not found at $OVERRIDE_FILE"
-                exit 1
+                echo "WARNING: override.properties not found, listing drop artifact contents:"
+                find "$(Pipeline.Workspace)/drop" -type f
               fi
-
-    - deployment: DeployApp
-      displayName: Deployment Job
-      dependsOn: Display_Override_Properties
-      environment: $(Build.SourceBranchName)
-      workspace:
-        clean: all
-      strategy:
-        runOnce:
-          deploy:
-            steps:
-              - download: current
-                artifact: drop
-              - task: CmdLine@2
-                displayName: Deploying Bar File
-                env:
-                  BRANCH: $(Build.SourceBranchName)
-                inputs:
-                  workingDirectory: $(Pipeline.Workspace)/drop
-                  script: |
-                    set -e
-                    . /opt/IBM/ace/server/bin/mqsiprofile
-                    IntegrationNode=($(yq e ".IntegrationNode" config.yml))
-                    ApplicationName=$(yq e ".ApplicationName" config.yml)
-                    IntegrationServer=($(yq e ".IntegrationServer" config.yml))
-                    broker_files=()
-                    for node in "${IntegrationNode[@]}"; do
-                      for broker_file in /home/devops/broker/$BRANCH/${node}*; do
-                        fname=$(basename "$broker_file")
-                        if [[ $fname =~ ^${node}_([0-9]+)\.broker$ ]]; then
-                          broker_files+=("$broker_file")
-                        fi
-                      done
-                    done
-                    if [ ${#broker_files[@]} -eq 0 ]; then
-                      echo "Error: No Integration Node found for $IntegrationNode"
-                      exit 1
-                    fi
-                    for broker_file in "${broker_files[@]}"; do
-                      servers=($(mqsilist -n "$broker_file" -w 5 | grep "running" | grep "Integration" | cut -d"'" -f2))
-                      if [ ${#servers[@]} -eq 0 ]; then
-                        echo "Error: Not able to access $broker_file or no Integration Server is running"
-                        exit 1
-                      fi
-                      for server in "${IntegrationServer[@]}"; do
-                        if printf '%s\n' "${servers[@]}" | grep -qx "$server"; then
-                          host=$(grep host "$broker_file" | awk -F'"' '{print $4}')
-                          echo "HOST: $host , IntegrationNode: $fname , IntegrationServer: $server"
-                          ibmint deploy \
-                            --input-bar-file "$ApplicationName.bar" \
-                            --integration-node-file "$broker_file" \
-                            --output-server "$server"
-                        else
-                            echo " Integration server $server name is incorrect or not running"
-                            exit 1  
-                        fi
-                      done
-                    done
