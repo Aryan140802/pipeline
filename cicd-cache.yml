@@ -1,10 +1,91 @@
+# ================= BUILD STAGE =================
 - stage: Build
   displayName: Build Stage
+  dependsOn: Validation_Stage
+  pool:
+    name: TFS-RH-1
+  condition: succeeded('Validation_Stage')
+
   jobs:
-    - job: AgentBuildJob
+    - job: Build_Job
       displayName: Agent Build job
+      workspace:
+        clean: all
+
       steps:
-        # ... your existing build steps ...
+
+        - checkout: self
+          path: s/app
+
+        - checkout: git://devops_testing/eis-configuration@refs/heads/config
+          path: s/eis-configurations
+
+        - task: CmdLine@2
+          displayName: Building Bar file
+          env:
+            BRANCH: $(Build.SourceBranchName)
+          inputs:
+            script: |
+              set -e
+              . /opt/IBM/ace/server/bin/mqsiprofile
+
+              applicationName=$(ls -1 "$(Build.SourcesDirectory)/app" | grep -vE "Config|README.md|azure-pipelines.yml" | tail -n 1)
+
+              mkdir -p "$(Build.SourcesDirectory)/app/Config"
+
+              yq e ".$applicationName | select(. !=null)" \
+                "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_config.yml" \
+                > "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
+
+              if [ -s "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml" ]; then
+                config_path="$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
+                yq -i ".ApplicationName = \"$applicationName\"" "$config_path"
+                cp "$config_path" "$(Build.BinariesDirectory)/config.yml"
+              else
+                yq e ".$BRANCH" "$(Build.SourcesDirectory)/app/Config/config.yml" \
+                  > "$(Build.SourcesDirectory)/app/Config/temp.yml" &&
+                mv "$(Build.SourcesDirectory)/app/Config/temp.yml" "$(Build.SourcesDirectory)/app/Config/config.yml"
+                config_path="$(Build.SourcesDirectory)/app/Config/config.yml"
+                yq -i ".ApplicationName = \"$applicationName\"" "$config_path"
+                cp "$config_path" "$(Build.BinariesDirectory)/config.yml"
+              fi
+
+              override_path=""
+              if [ -f "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml" ]; then
+                yq ".$applicationName | to_entries[] | .key + \" = \" + .value" \
+                  "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml" \
+                  > "$(Build.SourcesDirectory)/app/Config/override.properties"
+                override_path="$(Build.SourcesDirectory)/app/Config/override.properties"
+              fi
+
+              if [ -s "$override_path" ]; then
+                ibmint package \
+                  --input-path "$(Build.SourcesDirectory)/app" \
+                  --output-bar-file "$(Build.BinariesDirectory)/$applicationName.bar" \
+                  --java-version 8 \
+                  --overrides-file "$override_path"
+              else
+                ibmint package \
+                  --input-path "$(Build.SourcesDirectory)/app" \
+                  --output-bar-file "$(Build.BinariesDirectory)/$applicationName.bar" \
+                  --java-version 8
+              fi
+
+              mqsireadbar -b "$(Build.BinariesDirectory)/$applicationName.bar" -r \
+                | grep "=" | sed -e 's/^[[:space:]]*//' \
+                > "$(Build.BinariesDirectory)/override.properties"
+
+
+        - task: CopyFiles@2
+          inputs:
+            SourceFolder: $(Build.BinariesDirectory)
+            TargetFolder: $(Build.ArtifactStagingDirectory)
+            OverWrite: true
+
+        - task: PublishBuildArtifacts@1
+          inputs:
+            PathtoPublish: $(Build.ArtifactStagingDirectory)
+            ArtifactName: drop
 
     - job: Display_Override_Properties
       displayName: Display Override Properties
