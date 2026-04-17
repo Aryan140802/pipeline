@@ -1,102 +1,70 @@
-# ================= BUILD STAGE =================
-- stage: Build
-  displayName: Build Stage
-  dependsOn: Validation_Stage
-  pool:
-    name: TFS-RH-1
-  condition: succeeded('Validation_Stage')
+- task: CmdLine@2
+  displayName: Deploying Bar File
+  env:
+    BRANCH: $(Build.SourceBranchName)
+  inputs:
+    workingDirectory: $(Pipeline.Workspace)/drop
+    script: |
+      set -e
+      . /opt/IBM/ace/server/bin/mqsiprofile
 
-  jobs:
-    - job: Build_Job
-      displayName: Agent Build job
-      workspace:
-        clean: all
+      IntegrationNode=($(yq e ".IntegrationNode" config.yml))
+      ApplicationName=$(yq e ".ApplicationName" config.yml)
+      IntegrationServer=($(yq e ".IntegrationServer" config.yml))
 
-      steps:
+      broker_files=()
+      for node in "${IntegrationNode[@]}"; do
+        for broker_file in /home/devops/broker/$BRANCH/${node}*; do
+          fname=$(basename "$broker_file")
+          if [[ $fname =~ ^${node}_([0-9]+)\.broker$ ]]; then
+            broker_files+=("$broker_file")
+          fi
+        done
+      done
 
-        - checkout: self
-          path: s/app
+      if [ ${#broker_files[@]} -eq 0 ]; then
+        echo "Error: No Integration Node found for $IntegrationNode"
+        exit 1
+      fi
 
-        - checkout: git://devops_testing/eis-configuration@refs/heads/config
-          path: s/eis-configurations
+      for broker_file in "${broker_files[@]}"; do
+        servers=($(mqsilist -n "$broker_file" -w 5 | grep "running" | grep "Integration" | cut -d"'" -f2))
+        if [ ${#servers[@]} -eq 0 ]; then
+          echo "Error: Not able to access $broker_file or no Integration Server is running"
+          exit 1
+        fi
 
-        - task: CmdLine@2
-          displayName: Building Bar file
-          env:
-            BRANCH: $(Build.SourceBranchName)
-          inputs:
-            script: |
-              set -e
-              . /opt/IBM/ace/server/bin/mqsiprofile
+        for server in "${IntegrationServer[@]}"; do
+          if printf '%s\n' "${servers[@]}" | grep -qx "$server"; then
+            host=$(grep host "$broker_file" | awk -F'"' '{print $4}')
+            echo "HOST: $host , IntegrationNode: $fname , IntegrationServer: $server"
 
-              applicationName=$(ls -1 "$(Build.SourcesDirectory)/app" | grep -vE "Config|README.md|azure-pipelines.yml" | tail -n 1)
+            # ── Capture deploy output and stream it live ──────────────────
+            DEPLOY_LOG=$(mktemp)
 
-              mkdir -p "$(Build.SourcesDirectory)/app/Config"
+            ibmint deploy \
+              --input-bar-file "$ApplicationName.bar" \
+              --integration-node-file "$broker_file" \
+              --output-server "$server" 2>&1 | tee "$DEPLOY_LOG"
 
-              yq e ".$applicationName | select(. !=null)" \
-                "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_config.yml" \
-                > "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
+            # ── Grep for BIP Error codes (BIPxxxxE pattern) ───────────────
+            ERROR_BIPS=$(grep -oP 'BIP\d+E' "$DEPLOY_LOG" || true)
 
-              if [ -s "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml" ]; then
-                config_path="$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
-                yq -i ".ApplicationName = \"$applicationName\"" "$config_path"
-                cp "$config_path" "$(Build.BinariesDirectory)/config.yml"
-              else
-                yq e ".$BRANCH" "$(Build.SourcesDirectory)/app/Config/config.yml" \
-                  > "$(Build.SourcesDirectory)/app/Config/temp.yml" &&
-                mv "$(Build.SourcesDirectory)/app/Config/temp.yml" "$(Build.SourcesDirectory)/app/Config/config.yml"
-                config_path="$(Build.SourcesDirectory)/app/Config/config.yml"
-                yq -i ".ApplicationName = \"$applicationName\"" "$config_path"
-                cp "$config_path" "$(Build.BinariesDirectory)/config.yml"
-              fi
+            if [ -n "$ERROR_BIPS" ]; then
+              echo ""
+              echo "##[error] Deployment FAILED — BIP Error codes detected:"
+              echo "$ERROR_BIPS" | sort -u
+              rm -f "$DEPLOY_LOG"
+              exit 1
+            fi
 
-              override_path=""
-              if [ -f "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml" ]; then
-                yq ".$applicationName | to_entries[] | .key + \" = \" + .value" \
-                  "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml" \
-                  > "$(Build.SourcesDirectory)/app/Config/override.properties"
-                override_path="$(Build.SourcesDirectory)/app/Config/override.properties"
-              fi
+            # ── Confirm clean deployment ──────────────────────────────────
+            echo "Deployment successful — no BIP Error codes found."
+            rm -f "$DEPLOY_LOG"
 
-              if [ -s "$override_path" ]; then
-                ibmint package \
-                  --input-path "$(Build.SourcesDirectory)/app" \
-                  --output-bar-file "$(Build.BinariesDirectory)/$applicationName.bar" \
-                  --java-version 8 \
-                  --overrides-file "$override_path"
-              else
-                ibmint package \
-                  --input-path "$(Build.SourcesDirectory)/app" \
-                  --output-bar-file "$(Build.BinariesDirectory)/$applicationName.bar" \
-                  --java-version 8
-              fi
-
-              mqsireadbar -b "$(Build.BinariesDirectory)/$applicationName.bar" -r \
-                | grep "=" | sed -e 's/^[[:space:]]*//' \
-                > "$(Build.BinariesDirectory)/override.properties"
-
-
-        - task: CopyFiles@2
-          inputs:
-            SourceFolder: $(Build.BinariesDirectory)
-            TargetFolder: $(Build.ArtifactStagingDirectory)
-            OverWrite: true
-
-        - task: PublishBuildArtifacts@1
-          inputs:
-            PathtoPublish: $(Build.ArtifactStagingDirectory)
-            ArtifactName: drop
-
-        - task : CmdLine@2
-          displayName: Display override.properties
-          condition : always()
-          inputs:
-            script: |
-              OVERRIDE_FILE="$(Build.BinariesDirectory)/override.properties"
-              if [ -f "$OVERRIDE_FILE" ]; then
-                echo "=========override.properties contents ========="
-                cat "$OVERRIDE_FILE"
-                echo "==============================================="
-              else
-                echo "ERROR : override.properties not found at "$OVERRIDE_FILE" 
-              fi
+          else
+            echo "Integration server $server name is incorrect or not running"
+            exit 1
+          fi
+        done
+      done
