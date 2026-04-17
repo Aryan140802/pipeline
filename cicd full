@@ -224,6 +224,8 @@ stages:
 # ================= RELEASE STAGE =================
 - stage: Release
   displayName: Deploy Stage
+  pool:
+    name: TFS-RH-1
   dependsOn:
     - Validation_Stage
     - Build
