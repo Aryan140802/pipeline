@@ -294,25 +294,24 @@ stages:
                           host=$(grep host "$broker_file" | awk -F'"' '{print $4}')
                           echo "HOST: $host , IntegrationNode: $fname , IntegrationServer: $server"
 
-                          # ── Capture deploy output and stream it live ──────────────────
+                          
                           DEPLOY_LOG=$(mktemp)
 
                           ibmint deploy \
                             --input-bar-file "$ApplicationName.bar" \
                             --integration-node-file "$broker_file" \
-                            --output-server "$server"
+                            --output-server "$server" 2>&1 | tee "$DEPLOY_LOG"
 
-                          # ── Grep for BIP Error codes (BIPxxxxE pattern) ───────────────
+                         
                           ERROR_BIPS=$(grep -oP 'BIP\d+E' "$DEPLOY_LOG" || true)
                           if [ -n "$ERROR_BIPS" ]; then
                             echo ""
                             echo "##[error] Deployment FAILED — BIP Error codes detected:"
-                            echo "$ERROR_BIPS" | sort -u
                             rm -f "$DEPLOY_LOG"
                             exit 1
                           fi
 
-                          #  ── Confirm clean deployment ──────────────────────────────────
+                          
                           echo "Deployment successful — no BIP Error codes found."
                           rm -f "$DEPLOY_LOG"
 
