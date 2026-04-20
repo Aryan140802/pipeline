@@ -21,80 +21,78 @@
       CONFIG_FILE="$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_config.yml"
       OVERRIDE_FILE="$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml"
 
-      # ═══════════════════════════════════════════════════════════════
-      # YAML SYNTAX VALIDATION — eis-configurations repo
-      # ═══════════════════════════════════════════════════════════════
+      # ═══════════════════════════════════════════════════════════════════════
+      # [STEP 1] YAML SYNTAX VALIDATION — entire eis-configurations repo
+      # ═══════════════════════════════════════════════════════════════════════
       echo ""
-      echo "========= [1/2] Validating eis-configurations YAML files ========="
+      echo "========= [1/3] Validating ALL eis-configurations YAML files ========="
 
       EIS_DIR="$(Build.SourcesDirectory)/eis-configurations"
-      VALIDATION_FAILED=0
-      FILES_CHECKED=0
-      FILES_FAILED=0
+      EIS_VALIDATION_FAILED=0
+      EIS_FILES_CHECKED=0
+      EIS_FILES_FAILED=0
 
-      # Collect all .yml / .yaml files in eis-configurations
       while IFS= read -r -d '' yaml_file; do
         relative_path="${yaml_file#$EIS_DIR/}"
-        FILES_CHECKED=$((FILES_CHECKED + 1))
+        EIS_FILES_CHECKED=$((EIS_FILES_CHECKED + 1))
 
         if yq e '.' "$yaml_file" > /dev/null 2>&1; then
           echo "  ✔ $relative_path"
         else
           echo "  ✘ $relative_path — SYNTAX ERROR:"
           yq e '.' "$yaml_file" 2>&1 | sed 's/^/      /'
-          FILES_FAILED=$((FILES_FAILED + 1))
-          VALIDATION_FAILED=1
+          EIS_FILES_FAILED=$((EIS_FILES_FAILED + 1))
+          EIS_VALIDATION_FAILED=1
         fi
       done < <(find "$EIS_DIR" -type f \( -name "*.yml" -o -name "*.yaml" \) -print0 | sort -z)
 
       echo ""
-      echo "  Checked : $FILES_CHECKED file(s)"
-      echo "  Passed  : $((FILES_CHECKED - FILES_FAILED)) file(s)"
-      echo "  Failed  : $FILES_FAILED file(s)"
+      echo "  Checked : $EIS_FILES_CHECKED file(s)"
+      echo "  Passed  : $((EIS_FILES_CHECKED - EIS_FILES_FAILED)) file(s)"
+      echo "  Failed  : $EIS_FILES_FAILED file(s)"
 
-      if [ "$VALIDATION_FAILED" -eq 1 ]; then
+      if [ "$EIS_VALIDATION_FAILED" -eq 1 ]; then
         echo ""
-        echo "##[error] YAML syntax validation failed for $FILES_FAILED file(s) in eis-configurations."
+        echo "##[error] YAML syntax validation failed for $EIS_FILES_FAILED file(s) in eis-configurations."
         exit 1
       fi
 
       echo "========= eis-configurations YAML validation passed ========="
-      # ═══════════════════════════════════════════════════════════════
 
-      # ═══════════════════════════════════════════════════════════════
-      # YAML SYNTAX VALIDATION — app/Config repo
-      # ═══════════════════════════════════════════════════════════════
+      # ═══════════════════════════════════════════════════════════════════════
+      # [STEP 2] YAML SYNTAX VALIDATION — app/Config directory
+      # ═══════════════════════════════════════════════════════════════════════
       echo ""
-      echo "========= [2/2] Validating app/Config YAML files ========="
+      echo "========= [2/3] Validating app/Config YAML files ========="
 
       APP_CONFIG_DIR="$(Build.SourcesDirectory)/app/Config"
-      VALIDATION_FAILED=0
-      FILES_CHECKED=0
-      FILES_FAILED=0
+      APP_VALIDATION_FAILED=0
+      APP_FILES_CHECKED=0
+      APP_FILES_FAILED=0
 
       if [ -d "$APP_CONFIG_DIR" ]; then
         while IFS= read -r -d '' yaml_file; do
           relative_path="${yaml_file#$(Build.SourcesDirectory)/app/}"
-          FILES_CHECKED=$((FILES_CHECKED + 1))
+          APP_FILES_CHECKED=$((APP_FILES_CHECKED + 1))
 
           if yq e '.' "$yaml_file" > /dev/null 2>&1; then
             echo "  ✔ $relative_path"
           else
             echo "  ✘ $relative_path — SYNTAX ERROR:"
             yq e '.' "$yaml_file" 2>&1 | sed 's/^/      /'
-            FILES_FAILED=$((FILES_FAILED + 1))
-            VALIDATION_FAILED=1
+            APP_FILES_FAILED=$((APP_FILES_FAILED + 1))
+            APP_VALIDATION_FAILED=1
           fi
         done < <(find "$APP_CONFIG_DIR" -type f \( -name "*.yml" -o -name "*.yaml" \) -print0 | sort -z)
 
         echo ""
-        echo "  Checked : $FILES_CHECKED file(s)"
-        echo "  Passed  : $((FILES_CHECKED - FILES_FAILED)) file(s)"
-        echo "  Failed  : $FILES_FAILED file(s)"
+        echo "  Checked : $APP_FILES_CHECKED file(s)"
+        echo "  Passed  : $((APP_FILES_CHECKED - APP_FILES_FAILED)) file(s)"
+        echo "  Failed  : $APP_FILES_FAILED file(s)"
 
-        if [ "$VALIDATION_FAILED" -eq 1 ]; then
+        if [ "$APP_VALIDATION_FAILED" -eq 1 ]; then
           echo ""
-          echo "##[error] YAML syntax validation failed for $FILES_FAILED file(s) in app/Config."
+          echo "##[error] YAML syntax validation failed for $APP_FILES_FAILED file(s) in app/Config."
           exit 1
         fi
       else
@@ -102,6 +100,147 @@
       fi
 
       echo "========= app/Config YAML validation passed ========="
-      # ═══════════════════════════════════════════════════════════════
 
-      # ... rest of your existing validation logic (duplicate checks, required fields, etc.)
+      # ═══════════════════════════════════════════════════════════════════════
+      # [STEP 3] BRANCH-SPECIFIC CONFIG VALIDATION — existence + required files
+      # ═══════════════════════════════════════════════════════════════════════
+      echo ""
+      echo "========= [3/3] Branch-specific config validation ========="
+
+      # Confirm branch config file exists (already syntax-validated above)
+      if [ ! -f "$CONFIG_FILE" ]; then
+        echo "##[error] Config file not found: $CONFIG_FILE"
+        exit 1
+      fi
+      echo "  ✔ ${BRANCH}_config.yml — exists"
+
+      # Override file is optional — just confirm it if present
+      if [ -f "$OVERRIDE_FILE" ]; then
+        echo "  ✔ ${BRANCH}_override.yml — exists"
+      else
+        echo "  ℹ ${BRANCH}_override.yml — not found (optional, skipping)"
+      fi
+
+      # ── Duplicate key check in config file ──────────────────────────────
+      echo ""
+      echo "  Checking for duplicate application key in ${BRANCH}_config.yml..."
+      COUNT=$(yq e "keys | map(select(. == \"$applicationName\")) | length" "$CONFIG_FILE")
+      if [ "$COUNT" -gt 1 ]; then
+        echo "##[error] Config file '${BRANCH}_config.yml' has duplicate entries for key '$applicationName'."
+        exit 1
+      fi
+      echo "  ✔ No duplicate key for '$applicationName' in ${BRANCH}_config.yml"
+
+      # ── Duplicate key check in override file (if present) ───────────────
+      if [ -f "$OVERRIDE_FILE" ]; then
+        echo "  Checking for duplicate application key in ${BRANCH}_override.yml..."
+        COUNT=$(yq e "keys | map(select(. == \"$applicationName\")) | length" "$OVERRIDE_FILE")
+        if [ "$COUNT" -gt 1 ]; then
+          echo "##[error] Override file '${BRANCH}_override.yml' has duplicate entries for key '$applicationName'."
+          exit 1
+        fi
+        echo "  ✔ No duplicate key for '$applicationName' in ${BRANCH}_override.yml"
+      fi
+
+      # ── Extract app config block ─────────────────────────────────────────
+      echo ""
+      echo "  Extracting config block for '$applicationName'..."
+
+      if [ ! -d "$(Build.SourcesDirectory)/app/Config" ]; then
+        mkdir -p "$(Build.SourcesDirectory)/app/Config"
+      fi
+
+      yq e ".$applicationName | select(. != null)" \
+        "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_config.yml" \
+        > "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
+
+      if [ -s "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml" ]; then
+        config_path="$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
+
+        # Validate extracted block syntax
+        echo "  Validating extracted config block for '$applicationName'..."
+        if ! yq e '.' "$config_path" > /dev/null 2>&1; then
+          echo "##[error] YAML syntax error in extracted config block for '$applicationName':"
+          yq e '.' "$config_path" 2>&1 | sed 's/^/    /'
+          exit 1
+        fi
+        echo "  ✔ Extracted config block — syntax OK"
+
+      elif [ -s "$(Build.SourcesDirectory)/app/Config/config.yml" ]; then
+        yq e ".$BRANCH" "$(Build.SourcesDirectory)/app/Config/config.yml" \
+          > "$(Build.SourcesDirectory)/app/Config/temp.yml" && \
+        mv "$(Build.SourcesDirectory)/app/Config/temp.yml" "$(Build.SourcesDirectory)/app/Config/config.yml"
+        config_path="$(Build.SourcesDirectory)/app/Config/config.yml"
+
+        # Validate branch-extracted block syntax
+        echo "  Validating branch config block for '$BRANCH'..."
+        if ! yq e '.' "$config_path" > /dev/null 2>&1; then
+          echo "##[error] YAML syntax error in branch config block:"
+          yq e '.' "$config_path" 2>&1 | sed 's/^/    /'
+          exit 1
+        fi
+        echo "  ✔ Branch config block — syntax OK"
+
+      else
+        echo "##[error] config.yml not found and no eis-configuration entry found for '$applicationName'"
+        exit 1
+      fi
+
+      # ── Required fields check ────────────────────────────────────────────
+      echo ""
+      echo "  Checking required fields in config..."
+
+      REQUIRED_FIELDS=(
+        IntegrationNode
+        IntegrationServer
+      )
+
+      ALL_FIELDS_OK=1
+      for field in "${REQUIRED_FIELDS[@]}"; do
+        value=$(yq e ".$field // \"\"" "$config_path" | tr -d '[:space:]')
+        if [ -z "$value" ]; then
+          echo "  ✘ $field — MISSING or EMPTY"
+          ALL_FIELDS_OK=0
+        else
+          echo "  ✔ $field — OK ($value)"
+        fi
+      done
+
+      if [ "$ALL_FIELDS_OK" -eq 0 ]; then
+        echo ""
+        echo "##[error] One or more required fields are missing or empty in config."
+        exit 1
+      fi
+
+      # ── Deploy and Cache flag resolution ─────────────────────────────────
+      echo ""
+      echo "  Resolving Deploy and Cache flags..."
+
+      DEPLOY=$(yq e ".Deploy" "$config_path" | tr -d '[:space:]')
+      CACHE_PRESENT=$(yq e ".Cache // [] | length > 0" "$config_path" | tr -d '[:space:]')
+
+      if [[ "$DEPLOY" =~ ^(false|False)$ ]]; then
+        DEPLOY="false"
+      else
+        DEPLOY="true"
+      fi
+
+      if [[ "$CACHE_PRESENT" =~ ^(true|True)$ ]]; then
+        CACHE_PRESENT="true"
+      else
+        CACHE_PRESENT="false"
+      fi
+
+      if [[ "$DEPLOY" != "true" && "$DEPLOY" != "false" ]]; then
+        echo "##[error] Invalid Deploy flag value in config: '$DEPLOY'"
+        exit 1
+      fi
+
+      echo "  ✔ DeployFlag  = $DEPLOY"
+      echo "  ✔ CacheFlag   = $CACHE_PRESENT"
+
+      echo ""
+      echo "========= Branch-specific config validation passed ========="
+
+      echo "##vso[task.setvariable variable=DeployFlag;isOutput=true]$DEPLOY"
+      echo "##vso[task.setvariable variable=CacheFlag;isOutput=true]$CACHE_PRESENT"
