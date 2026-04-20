@@ -55,14 +55,14 @@ stages:
                   relative_path="${yaml_file#$EIS_DIR/}"
                   EIS_FILES_CHECKED=$((EIS_FILES_CHECKED + 1))
 
-                  if yq e '.' "$yaml_file" > /dev/null 2>&1; then
-                    echo "  ✔ $relative_path"
-                  else
+                  YQ_OUTPUT=$(yq e '.' "$yaml_file" 2>&1) || {
                     echo "  ✘ $relative_path — SYNTAX ERROR:"
-                    yq e '.' "$yaml_file" 2>&1 | sed 's/^/      /'
+                    echo "$YQ_OUTPUT" | sed 's/^/      /'
                     EIS_FILES_FAILED=$((EIS_FILES_FAILED + 1))
                     EIS_VALIDATION_FAILED=1
-                  fi
+                    continue
+                  }
+                  echo "  ✔ $relative_path"
                 done < <(find "$EIS_DIR" -type f \( -name "*.yml" -o -name "*.yaml" \) -print0 | sort -z)
 
                 echo ""
@@ -91,14 +91,14 @@ stages:
                     relative_path="${yaml_file#$(Build.SourcesDirectory)/app/}"
                     APP_FILES_CHECKED=$((APP_FILES_CHECKED + 1))
 
-                    if yq e '.' "$yaml_file" > /dev/null 2>&1; then
-                      echo "  ✔ $relative_path"
-                    else
+                    YQ_OUTPUT=$(yq e '.' "$yaml_file" 2>&1) || {
                       echo "  ✘ $relative_path — SYNTAX ERROR:"
-                      yq e '.' "$yaml_file" 2>&1 | sed 's/^/      /'
+                      echo "$YQ_OUTPUT" | sed 's/^/      /'
                       APP_FILES_FAILED=$((APP_FILES_FAILED + 1))
                       APP_VALIDATION_FAILED=1
-                    fi
+                      continue
+                    }
+                    echo "  ✔ $relative_path"
                   done < <(find "$APP_CONFIG_DIR" -type f \( -name "*.yml" -o -name "*.yaml" \) -print0 | sort -z)
 
                   echo ""
@@ -166,11 +166,11 @@ stages:
                   config_path="$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
 
                   echo "  Validating extracted config block for '$applicationName'..."
-                  if ! yq e '.' "$config_path" > /dev/null 2>&1; then
+                  YQ_OUTPUT=$(yq e '.' "$config_path" 2>&1) || {
                     echo "##[error] YAML syntax error in extracted config block for '$applicationName':"
-                    yq e '.' "$config_path" 2>&1 | sed 's/^/    /'
+                    echo "$YQ_OUTPUT" | sed 's/^/    /'
                     exit 1
-                  fi
+                  }
                   echo "  ✔ Extracted config block — syntax OK"
 
                 elif [ -s "$(Build.SourcesDirectory)/app/Config/config.yml" ]; then
@@ -180,11 +180,11 @@ stages:
                   config_path="$(Build.SourcesDirectory)/app/Config/config.yml"
 
                   echo "  Validating branch config block for '$BRANCH'..."
-                  if ! yq e '.' "$config_path" > /dev/null 2>&1; then
+                  YQ_OUTPUT=$(yq e '.' "$config_path" 2>&1) || {
                     echo "##[error] YAML syntax error in branch config block:"
-                    yq e '.' "$config_path" 2>&1 | sed 's/^/    /'
+                    echo "$YQ_OUTPUT" | sed 's/^/    /'
                     exit 1
-                  fi
+                  }
                   echo "  ✔ Branch config block — syntax OK"
 
                 else
