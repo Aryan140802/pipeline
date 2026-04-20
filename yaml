@@ -1,45 +1,145 @@
+- task: CmdLine@2
+  name: val_task
+  env:
+    BRANCH: $(Build.SourceBranchName)
+  displayName: Validating repository
+  inputs:
+    script: |
+      set -e
 
-BIP8118I: Deploying to server... 
-BIP1357E: Source file 'thirdPartyAAMAZE_sys/thirdPartyAAMAZE_sys.subflow' could not be processed. 
- The source file thirdPartyAAMAZE_sys/thirdPartyAAMAZE_sys.subflow could not be processed. The failure to process this file has not prevented the processing of other files in the deployment. 
-Use the preceding error messages to ascertain the cause of the failure to process the file. 
-BIP5004E: An XML parsing error 'The root element is required in a well-formed document.' occurred on line 80 column 1 when parsing element ''.  Internal error codes are '1500' and '2'. 
- This error was reported by the generic XML parser, and is usually the result of a badly formed XML message. 
-Check that the input XML message is a well-formed XML message that adheres to the XML specification. The line number and column number that are quoted in the message give the position where the parser discovered the problem. However, the actual error might be earlier in the message.  
-Other possible causes are:  
-1. A character that is not supported by XML occurs in the instance message data.  
-     XML supports only a subset of control characters; therefore, ensure that no unsupported characters, such as X'00', appear in the document.  
-2. The Coded Character Set ID that is defined in the message header does not reflect the contents of the instance message.  
-     If the XML document has an XML prologue, the IBM MQ CodedCharSetId should be consistent with the XML Encoding field.  
-3. A reserved XML character appears in the instance message data.  
-     Characters that might be recognized as XML markup - for example, < and & - should be replaced with the corresponding XML entities - &lt; and &amp;. 
-BIP1360E: Message flow node 'thirdPartyAAMAZE_sys (Implementation)', 'gen.thirdPartyAAMAZE_sys#FCMComposite_1_8' in message flow 'gen.thirdPartyAAMAZE_sys' in RestAPI 'thirdPartyAAMAZE_sys' requires subflow 'thirdPartyAAMAZE_sys.subflow' which is not deployed. 
- While resolving the subflow definitions for message flow or subflow 'gen.thirdPartyAAMAZE_sys', the definition for the subflow 'RestAPI' could not be found. The top level message flow will be unable to start until the subflow is deployed. 
-Correct the error and redeploy the application or library which contains the subflow. 
-BIP1096E: The source 'thirdPartyAAMAZE_sys.bar' has been deployed but there were one or more failures which may mean the deployed resources will be unable to execute. 
- Use the proceeding messages to identify the cause of the failure(s). 
-BIP8071I: Successful command completion. 
-Deployment successful — no BIP Error codes found.
-HOST: 10.177.44.27 , IntegrationNode: PAYMENT_SYS_27.broker , IntegrationServer: Payment_S_06
-BIP8118I: Deploying to server... 
-BIP1357E: Source file 'thirdPartyAAMAZE_sys/thirdPartyAAMAZE_sys.subflow' could not be processed. 
- The source file thirdPartyAAMAZE_sys/thirdPartyAAMAZE_sys.subflow could not be processed. The failure to process this file has not prevented the processing of other files in the deployment. 
-Use the preceding error messages to ascertain the cause of the failure to process the file. 
-BIP5004E: An XML parsing error 'The root element is required in a well-formed document.' occurred on line 80 column 1 when parsing element ''.  Internal error codes are '1500' and '2'. 
- This error was reported by the generic XML parser, and is usually the result of a badly formed XML message. 
-Check that the input XML message is a well-formed XML message that adheres to the XML specification. The line number and column number that are quoted in the message give the position where the parser discovered the problem. However, the actual error might be earlier in the message.  
-Other possible causes are:  
-1. A character that is not supported by XML occurs in the instance message data.  
-     XML supports only a subset of control characters; therefore, ensure that no unsupported characters, such as X'00', appear in the document.  
-2. The Coded Character Set ID that is defined in the message header does not reflect the contents of the instance message.  
-     If the XML document has an XML prologue, the IBM MQ CodedCharSetId should be consistent with the XML Encoding field.  
-3. A reserved XML character appears in the instance message data.  
-     Characters that might be recognized as XML markup - for example, < and & - should be replaced with the corresponding XML entities - &lt; and &amp;. 
-BIP1360E: Message flow node 'thirdPartyAAMAZE_sys (Implementation)', 'gen.thirdPartyAAMAZE_sys#FCMComposite_1_8' in message flow 'gen.thirdPartyAAMAZE_sys' in RestAPI 'thirdPartyAAMAZE_sys' requires subflow 'thirdPartyAAMAZE_sys.subflow' which is not deployed. 
- While resolving the subflow definitions for message flow or subflow 'gen.thirdPartyAAMAZE_sys', the definition for the subflow 'RestAPI' could not be found. The top level message flow will be unable to start until the subflow is deployed. 
-Correct the error and redeploy the application or library which contains the subflow. 
-BIP1096E: The source 'thirdPartyAAMAZE_sys.bar' has been deployed but there were one or more failures which may mean the deployed resources will be unable to execute. 
- Use the proceeding messages to identify the cause of the failure(s). 
-BIP8071I: Successful command completion. 
-Deployment successful — no BIP Error codes found.
-Finishing: Deploying Bar File
+      applicationName=$(ls -1 "$(Build.SourcesDirectory)/app" | grep -vE "Config|README.md|azure-pipelines.yml" | tail -n 1)
+      echo "Application name : $applicationName"
+      echo "branch: $BRANCH"
+
+      if [ "$BRANCH" = "main" ]; then
+        echo "Branch is 'main' — skipping config validation"
+        echo "##vso[task.setvariable variable=DeployFlag;isOutput=true]false"
+        echo "##vso[task.setvariable variable=CacheFlag;isOutput=true]false"
+        exit 0
+      fi
+
+      CONFIG_FILE="$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_config.yml"
+      OVERRIDE_FILE="$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml"
+
+      # ── YAML Syntax Validation ─────────────────────────────────────────
+      echo "========= Validating YAML Syntax ========="
+
+      if [ -f "$CONFIG_FILE" ]; then
+        echo "Checking syntax: ${BRANCH}_config.yml"
+        if ! yq e '.' "$CONFIG_FILE" > /dev/null 2>&1; then
+          echo "##[error] YAML syntax error in ${BRANCH}_config.yml:"
+          yq e '.' "$CONFIG_FILE"
+          exit 1
+        fi
+        echo "✔ ${BRANCH}_config.yml — syntax OK"
+      else
+        echo "##[error] Config file not found: $CONFIG_FILE"
+        exit 1
+      fi
+
+      if [ -f "$OVERRIDE_FILE" ]; then
+        echo "Checking syntax: ${BRANCH}_override.yml"
+        if ! yq e '.' "$OVERRIDE_FILE" > /dev/null 2>&1; then
+          echo "##[error] YAML syntax error in ${BRANCH}_override.yml:"
+          yq e '.' "$OVERRIDE_FILE"
+          exit 1
+        fi
+        echo "✔ ${BRANCH}_override.yml — syntax OK"
+      fi
+
+      echo "========= YAML Syntax validation passed ========="
+      # ──────────────────────────────────────────────────────────────────
+
+      if [ -f "$CONFIG_FILE" ]; then
+        COUNT=$(yq e "keys | map(select(. == \"$applicationName\")) | length" "$CONFIG_FILE")
+        if [ "$COUNT" -gt 1 ]; then
+            echo "ERROR: Config file '${BRANCH}_config.yml' has duplicate entries for key '$applicationName'."
+            exit 1
+        fi
+      fi
+
+      if [ -f "$OVERRIDE_FILE" ]; then
+        COUNT=$(yq e "keys | map(select(. == \"$applicationName\")) | length" "$OVERRIDE_FILE")
+        if [ "$COUNT" -gt 1 ]; then
+          echo "ERROR: Override file '${BRANCH}_override.yml' has duplicate entries for key '$applicationName'."
+          exit 1
+        fi
+      fi
+
+      if [ ! -d "$(Build.SourcesDirectory)/app/Config" ]; then
+        mkdir -p "$(Build.SourcesDirectory)/app/Config"
+      fi
+
+      yq e ".$applicationName | select(. != null)" \
+         "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_config.yml" \
+         > "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
+
+      if [ -s "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml" ]; then
+        config_path="$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
+
+        # ── Validate extracted app config block syntax ─────────────────
+        echo "Checking syntax of extracted config block for '$applicationName'..."
+        if ! yq e '.' "$config_path" > /dev/null 2>&1; then
+          echo "##[error] YAML syntax error in extracted config block for '$applicationName':"
+          yq e '.' "$config_path"
+          exit 1
+        fi
+        echo "✔ Extracted config block — syntax OK"
+        # ───────────────────────────────────────────────────────────────
+
+      elif [ -s "$(Build.SourcesDirectory)/app/Config/config.yml" ]; then
+        yq e ".$BRANCH" "$(Build.SourcesDirectory)/app/Config/config.yml" \
+          > "$(Build.SourcesDirectory)/app/Config/temp.yml" &&
+        mv "$(Build.SourcesDirectory)/app/Config/temp.yml" "$(Build.SourcesDirectory)/app/Config/config.yml"
+        config_path="$(Build.SourcesDirectory)/app/Config/config.yml"
+
+        # ── Validate branch-extracted config block syntax ──────────────
+        echo "Checking syntax of branch config block for '$BRANCH'..."
+        if ! yq e '.' "$config_path" > /dev/null 2>&1; then
+          echo "##[error] YAML syntax error in branch config block:"
+          yq e '.' "$config_path"
+          exit 1
+        fi
+        echo "✔ Branch config block — syntax OK"
+        # ───────────────────────────────────────────────────────────────
+
+      else
+        echo "ERROR: config.yml not found"
+        exit 1
+      fi
+
+      REQUIRED_FIELDS=(
+        IntegrationNode
+        IntegrationServer
+      )
+
+      for field in "${REQUIRED_FIELDS[@]}"; do
+        value=$(yq e ".$field // \"\"" "$config_path" | tr -d '[:space:]')
+        if [ -z "$value" ]; then
+          echo "ERROR: $field is missing or empty"
+          exit 1
+        fi
+      done
+
+      DEPLOY=$(yq e ".Deploy" "$config_path" | tr -d '[:space:]')
+      CACHE_PRESENT=$(yq e ".Cache // [] | length > 0" "$config_path" | tr -d '[:space:]')
+
+      if [[ "$DEPLOY" =~ ^(false|False)$ ]]; then
+        DEPLOY="false"
+      else
+        DEPLOY="true"
+      fi
+
+      if [[ "$CACHE_PRESENT" =~ ^(true|True)$ ]]; then
+        CACHE_PRESENT="true"
+      else
+        CACHE_PRESENT="false"
+      fi
+
+      if [[ "$DEPLOY" != "true" && "$DEPLOY" != "false" ]]; then
+        echo "Invalid Deploy flag in config.yml"
+        exit 1
+      fi
+
+      echo "##vso[task.setvariable variable=DeployFlag;isOutput=true]$DEPLOY"
+      echo "##vso[task.setvariable variable=CacheFlag;isOutput=true]$CACHE_PRESENT"
