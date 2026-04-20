@@ -250,304 +250,300 @@ stages:
                 echo "##vso[task.setvariable variable=CacheFlag;isOutput=true]$CACHE_PRESENT"
 
 
-# ================= BUILD STAGE =================
-- stage: Build
-  displayName: Build Stage
-  dependsOn: Validation_Stage
-  pool:
-    name: TFS-RH-1
-  condition: succeeded('Validation_Stage')
+  # ================= BUILD STAGE =================
+  - stage: Build
+    displayName: Build Stage
+    dependsOn: Validation_Stage
+    pool:
+      name: TFS-RH-1
+    condition: succeeded('Validation_Stage')
 
-  jobs:
-    - job: Build_Job
-      displayName: Agent Build job
-      workspace:
-        clean: all
+    jobs:
+      - job: Build_Job
+        displayName: Agent Build job
+        workspace:
+          clean: all
 
-      steps:
+        steps:
 
-        - checkout: self
-          path: s/app
+          - checkout: self
+            path: s/app
 
-        - checkout: git://devops_testing/eis-configuration@refs/heads/config
-          path: s/eis-configurations
+          - checkout: git://devops_testing/eis-configuration@refs/heads/config
+            path: s/eis-configurations
 
-        - task: CmdLine@2
-          displayName: Building Bar file
-          env:
-            BRANCH: $(Build.SourceBranchName)
-          inputs:
-            script: |
-              set -e
-              . /opt/IBM/ace/server/bin/mqsiprofile
+          - task: CmdLine@2
+            displayName: Building Bar file
+            env:
+              BRANCH: $(Build.SourceBranchName)
+            inputs:
+              script: |
+                set -e
+                . /opt/IBM/ace/server/bin/mqsiprofile
 
-              applicationName=$(ls -1 "$(Build.SourcesDirectory)/app" | grep -vE "Config|README.md|azure-pipelines.yml" | tail -n 1)
+                applicationName=$(ls -1 "$(Build.SourcesDirectory)/app" | grep -vE "Config|README.md|azure-pipelines.yml" | tail -n 1)
 
-              mkdir -p "$(Build.SourcesDirectory)/app/Config"
+                mkdir -p "$(Build.SourcesDirectory)/app/Config"
 
-              yq e ".$applicationName | select(. !=null)" \
-                "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_config.yml" \
-                > "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
+                yq e ".$applicationName | select(. !=null)" \
+                  "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_config.yml" \
+                  > "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
 
-              if [ -s "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml" ]; then
-                config_path="$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
-                yq -i ".ApplicationName = \"$applicationName\"" "$config_path"
-                cp "$config_path" "$(Build.BinariesDirectory)/config.yml"
-              else
-                yq e ".$BRANCH" "$(Build.SourcesDirectory)/app/Config/config.yml" \
-                  > "$(Build.SourcesDirectory)/app/Config/temp.yml" &&
-                mv "$(Build.SourcesDirectory)/app/Config/temp.yml" "$(Build.SourcesDirectory)/app/Config/config.yml"
-                config_path="$(Build.SourcesDirectory)/app/Config/config.yml"
-                yq -i ".ApplicationName = \"$applicationName\"" "$config_path"
-                cp "$config_path" "$(Build.BinariesDirectory)/config.yml"
-              fi
+                if [ -s "$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml" ]; then
+                  config_path="$(Build.SourcesDirectory)/app/Config/config_eis_configuration.yml"
+                  yq -i ".ApplicationName = \"$applicationName\"" "$config_path"
+                  cp "$config_path" "$(Build.BinariesDirectory)/config.yml"
+                else
+                  yq e ".$BRANCH" "$(Build.SourcesDirectory)/app/Config/config.yml" \
+                    > "$(Build.SourcesDirectory)/app/Config/temp.yml" &&
+                  mv "$(Build.SourcesDirectory)/app/Config/temp.yml" "$(Build.SourcesDirectory)/app/Config/config.yml"
+                  config_path="$(Build.SourcesDirectory)/app/Config/config.yml"
+                  yq -i ".ApplicationName = \"$applicationName\"" "$config_path"
+                  cp "$config_path" "$(Build.BinariesDirectory)/config.yml"
+                fi
 
-              override_path=""
-              if [ -f "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml" ]; then
-                yq ".$applicationName | to_entries[] | .key + \" = \" + .value" \
-                  "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml" \
-                  > "$(Build.SourcesDirectory)/app/Config/override.properties"
-                override_path="$(Build.SourcesDirectory)/app/Config/override.properties"
-              fi
+                override_path=""
+                if [ -f "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml" ]; then
+                  yq ".$applicationName | to_entries[] | .key + \" = \" + .value" \
+                    "$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml" \
+                    > "$(Build.SourcesDirectory)/app/Config/override.properties"
+                  override_path="$(Build.SourcesDirectory)/app/Config/override.properties"
+                fi
 
-              if [ -s "$override_path" ]; then
-                ibmint package \
-                  --input-path "$(Build.SourcesDirectory)/app" \
-                  --output-bar-file "$(Build.BinariesDirectory)/$applicationName.bar" \
-                  --java-version 8 \
-                  --overrides-file "$override_path"
-              else
-                ibmint package \
-                  --input-path "$(Build.SourcesDirectory)/app" \
-                  --output-bar-file "$(Build.BinariesDirectory)/$applicationName.bar" \
-                  --java-version 8
-              fi
+                if [ -s "$override_path" ]; then
+                  ibmint package \
+                    --input-path "$(Build.SourcesDirectory)/app" \
+                    --output-bar-file "$(Build.BinariesDirectory)/$applicationName.bar" \
+                    --java-version 8 \
+                    --overrides-file "$override_path"
+                else
+                  ibmint package \
+                    --input-path "$(Build.SourcesDirectory)/app" \
+                    --output-bar-file "$(Build.BinariesDirectory)/$applicationName.bar" \
+                    --java-version 8
+                fi
 
-              mqsireadbar -b "$(Build.BinariesDirectory)/$applicationName.bar" -r \
-                | grep "=" | sed -e 's/^[[:space:]]*//' \
-                > "$(Build.BinariesDirectory)/override.properties"
+                mqsireadbar -b "$(Build.BinariesDirectory)/$applicationName.bar" -r \
+                  | grep "=" | sed -e 's/^[[:space:]]*//' \
+                  > "$(Build.BinariesDirectory)/override.properties"
 
 
-        - task: CopyFiles@2
-          inputs:
-            SourceFolder: $(Build.BinariesDirectory)
-            TargetFolder: $(Build.ArtifactStagingDirectory)
-            OverWrite: true
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: $(Build.BinariesDirectory)
+              TargetFolder: $(Build.ArtifactStagingDirectory)
+              OverWrite: true
 
-        - task: PublishBuildArtifacts@1
-          inputs:
-            PathtoPublish: $(Build.ArtifactStagingDirectory)
-            ArtifactName: drop
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: $(Build.ArtifactStagingDirectory)
+              ArtifactName: drop
 
-        - task: CmdLine@2
-          displayName: Display override.properties
-          condition: always()
-          inputs:
-            script: |
-              OVERRIDE_FILE="$(Build.BinariesDirectory)/override.properties"
-              if [ -f "$OVERRIDE_FILE" ]; then
-                echo "=========override.properties contents ========="
-                cat "$OVERRIDE_FILE"
-                echo "==============================================="
-              else
-                echo "ERROR : override.properties not found at $OVERRIDE_FILE" 
-              fi
+          - task: CmdLine@2
+            displayName: Display override.properties
+            condition: always()
+            inputs:
+              script: |
+                OVERRIDE_FILE="$(Build.BinariesDirectory)/override.properties"
+                if [ -f "$OVERRIDE_FILE" ]; then
+                  echo "=========override.properties contents ========="
+                  cat "$OVERRIDE_FILE"
+                  echo "==============================================="
+                else
+                  echo "ERROR : override.properties not found at $OVERRIDE_FILE"
+                fi
 
-# ================= RELEASE STAGE =================
-- stage: Release
-  displayName: Deploy Stage
-  pool:
-    name: TFS-RH-1
-  dependsOn:
-    - Validation_Stage
-    - Build
-  condition: |
-    and(
-      succeeded('Build'),
-      eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'], 'true'),
-      ne(variables['Build.SourceBranchName'], 'main')
-    )
-  jobs:
-    
-    - deployment: DeployApp
-      displayName: Deployment Job
-      environment: $(Build.SourceBranchName)
-      workspace:
-        clean: all
+  # ================= RELEASE STAGE =================
+  - stage: Release
+    displayName: Deploy Stage
+    pool:
+      name: TFS-RH-1
+    dependsOn:
+      - Validation_Stage
+      - Build
+    condition: |
+      and(
+        succeeded('Build'),
+        eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'], 'true'),
+        ne(variables['Build.SourceBranchName'], 'main')
+      )
 
-      strategy:
-        runOnce:
-          deploy:
-            steps:
+    jobs:
+      - deployment: DeployApp
+        displayName: Deployment Job
+        environment: $(Build.SourceBranchName)
+        workspace:
+          clean: all
 
-              - download: current
-                artifact: drop
+        strategy:
+          runOnce:
+            deploy:
+              steps:
 
-              - task: CmdLine@2
-                displayName: Deploying Bar File
-                env:
-                  BRANCH: $(Build.SourceBranchName)
-                inputs:
-                  workingDirectory: $(Pipeline.Workspace)/drop
-                  script: |
-                    set -e
-                    . /opt/IBM/ace/server/bin/mqsiprofile
+                - download: current
+                  artifact: drop
 
-                    IntegrationNode=($(yq e ".IntegrationNode" config.yml))
-                    ApplicationName=$(yq e ".ApplicationName" config.yml)
-                    IntegrationServer=($(yq e ".IntegrationServer" config.yml))
+                - task: CmdLine@2
+                  displayName: Deploying Bar File
+                  env:
+                    BRANCH: $(Build.SourceBranchName)
+                  inputs:
+                    workingDirectory: $(Pipeline.Workspace)/drop
+                    script: |
+                      set -e
+                      . /opt/IBM/ace/server/bin/mqsiprofile
 
-                    broker_files=()
+                      IntegrationNode=($(yq e ".IntegrationNode" config.yml))
+                      ApplicationName=$(yq e ".ApplicationName" config.yml)
+                      IntegrationServer=($(yq e ".IntegrationServer" config.yml))
 
-                    for node in "${IntegrationNode[@]}"; do
-                      for broker_file in /home/devops/broker/$BRANCH/${node}*; do
-                        fname=$(basename "$broker_file")
-                        if [[ $fname =~ ^${node}_([0-9]+)\.broker$ ]]; then
-                          broker_files+=("$broker_file")
-                        fi
+                      broker_files=()
+
+                      for node in "${IntegrationNode[@]}"; do
+                        for broker_file in /home/devops/broker/$BRANCH/${node}*; do
+                          fname=$(basename "$broker_file")
+                          if [[ $fname =~ ^${node}_([0-9]+)\.broker$ ]]; then
+                            broker_files+=("$broker_file")
+                          fi
+                        done
                       done
-                    done
 
-                    if [ ${#broker_files[@]} -eq 0 ]; then
-                      echo "Error: No Integration Node found for $IntegrationNode"
-                      exit 1
-                    fi
-
-                    for broker_file in "${broker_files[@]}"; do
-                      servers=($(mqsilist -n "$broker_file" -w 5 | grep "running" | grep "Integration" | cut -d"'" -f2))
-
-                      if [ ${#servers[@]} -eq 0 ]; then
-                        echo "Error: Not able to access $broker_file or no Integration Server is running"
+                      if [ ${#broker_files[@]} -eq 0 ]; then
+                        echo "Error: No Integration Node found for $IntegrationNode"
                         exit 1
                       fi
 
-                      for server in "${IntegrationServer[@]}"; do
-                        if printf '%s\n' "${servers[@]}" | grep -qx "$server"; then
-                          host=$(grep host "$broker_file" | awk -F'"' '{print $4}')
-                          echo "HOST: $host , IntegrationNode: $fname , IntegrationServer: $server"
+                      for broker_file in "${broker_files[@]}"; do
+                        servers=($(mqsilist -n "$broker_file" -w 5 | grep "running" | grep "Integration" | cut -d"'" -f2))
 
-                          
-                          DEPLOY_LOG=$(mktemp)
+                        if [ ${#servers[@]} -eq 0 ]; then
+                          echo "Error: Not able to access $broker_file or no Integration Server is running"
+                          exit 1
+                        fi
 
-                          ibmint deploy \
-                            --input-bar-file "$ApplicationName.bar" \
-                            --integration-node-file "$broker_file" \
-                            --output-server "$server" 2>&1 | tee "$DEPLOY_LOG"
+                        for server in "${IntegrationServer[@]}"; do
+                          if printf '%s\n' "${servers[@]}" | grep -qx "$server"; then
+                            host=$(grep host "$broker_file" | awk -F'"' '{print $4}')
+                            echo "HOST: $host , IntegrationNode: $fname , IntegrationServer: $server"
 
-                         
-                          ERROR_BIPS=$(grep -oP 'BIP\d+E' "$DEPLOY_LOG" || true)
-                          if [ -n "$ERROR_BIPS" ]; then
-                            echo ""
-                            echo "##[error] Deployment FAILED — BIP Error codes detected:"
+                            DEPLOY_LOG=$(mktemp)
+
+                            ibmint deploy \
+                              --input-bar-file "$ApplicationName.bar" \
+                              --integration-node-file "$broker_file" \
+                              --output-server "$server" 2>&1 | tee "$DEPLOY_LOG"
+
+                            ERROR_BIPS=$(grep -oP 'BIP\d+E' "$DEPLOY_LOG" || true)
+                            if [ -n "$ERROR_BIPS" ]; then
+                              echo ""
+                              echo "##[error] Deployment FAILED — BIP Error codes detected:"
+                              rm -f "$DEPLOY_LOG"
+                              exit 1
+                            fi
+
+                            echo "Deployment successful — no BIP Error codes found."
                             rm -f "$DEPLOY_LOG"
+
+                          else
+                            echo " Integration server $server name is incorrect or not running"
                             exit 1
                           fi
-
-                          
-                          echo "Deployment successful — no BIP Error codes found."
-                          rm -f "$DEPLOY_LOG"
-
-
-                        else
-                            echo " Integration server $server name is incorrect or not running"
-                            exit 1  
-                        fi
+                        done
                       done
-                    done
 
-# ================= CACHE STAGE =================
-- stage: Cache
-  displayName: CACHE
-  pool:
-    name: TFS-RH-1
-  dependsOn:
-    - Validation_Stage
-    - Build
-  condition: |
-    and(
-      succeeded('Validation_Stage'),
-      eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.CacheFlag'], 'true'),
-      or(
-        eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'], 'false'),
-        succeeded('Build')
-      ),
-      ne(variables['Build.SourceBranchName'], 'main')
-    )
+  # ================= CACHE STAGE =================
+  - stage: Cache
+    displayName: CACHE
+    pool:
+      name: TFS-RH-1
+    dependsOn:
+      - Validation_Stage
+      - Build
+    condition: |
+      and(
+        succeeded('Validation_Stage'),
+        eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.CacheFlag'], 'true'),
+        or(
+          eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'], 'false'),
+          succeeded('Build')
+        ),
+        ne(variables['Build.SourceBranchName'], 'main')
+      )
 
-  jobs:
-    - job: Cache_Job
-      displayName: CACHE UPDATE
-      workspace:
-        clean: all
+    jobs:
+      - job: Cache_Job
+        displayName: CACHE UPDATE
+        workspace:
+          clean: all
 
-      steps:
+        steps:
 
-        - download: current
-          artifact: drop
+          - download: current
+            artifact: drop
 
-        - task: CmdLine@2
-          displayName: Update cache in Database
-          env:
-            BRANCH: $(Build.SourceBranchName)
-          inputs:
-            workingDirectory: $(Pipeline.Workspace)/drop/
-            script: |
-              source ~/.bashrc
-              set -e
-              if [ ! -f config.yml ]; then
-                echo "config.yml file was not found !!"
-                exit 1
-              fi
-
-              yq ".Cache[].Query" config.yml | while IFS= read -r SQL; do
-                echo "Executing SQL: $SQL"
-                OUTPUT=$(echo "$SQL" | isql "$BRANCH" "$DB_USER" "$DB_PASS" 2>&1)
-                STATUS=$?
-                if [[ $STATUS -eq 0 ]] && echo "$OUTPUT" | grep -qi "SQLRowCount"; then
-                  echo "SUCCESS: Query executed"
-                else
-                  echo "FAILED: Query did not execute"
+          - task: CmdLine@2
+            displayName: Update cache in Database
+            env:
+              BRANCH: $(Build.SourceBranchName)
+            inputs:
+              workingDirectory: $(Pipeline.Workspace)/drop/
+              script: |
+                source ~/.bashrc
+                set -e
+                if [ ! -f config.yml ]; then
+                  echo "config.yml file was not found !!"
                   exit 1
                 fi
-              done
 
-        - task: CmdLine@2
-          displayName: Update Cache in Server
-          env:
-            BRANCH: $(Build.SourceBranchName)
-          inputs:
-            workingDirectory: $(Pipeline.Workspace)/drop/
-            script: |
-              set -e
-
-              IntegrationNode=($(yq e ".IntegrationNode" config.yml))
-              broker_files=()
-
-              for node in "${IntegrationNode[@]}"; do
-                for broker_file in /home/devops/broker/$BRANCH/${node}*; do
-                  fname=$(basename "$broker_file")
-                  if [[ $fname =~ ^${node}_([0-9]+)\.broker$ ]]; then
-                    broker_files+=("$broker_file")
-                  fi
-                done
-              done
-
-              if [ ${#broker_files[@]} -eq 0 ]; then
-                echo "Error: No Integration Node found for $IntegrationNode"
-                exit 1
-              fi
-
-              for broker_file in "${broker_files[@]}"; do
-                host=$(cat "$broker_file" | grep host | cut -d"\"" -f4)
-                if yq -e ".Cache" config.yml >/dev/null 2>&1; then
-                  response=$(curl -s -k -X POST http://"$host":8002/cache/v1/loadCache \
-                  -H "Content-Type: application/json" \
-                  -d "$(yq -o=json ".Cache | map({\"FIELD_NAME\": .FIELD_NAME, \"FIELD_VALUE\": .FIELD_VALUE})" config.yml)")
-                  if [[ "$response" != *'"RESPONSE":"success"'* ]]; then
-                    echo "Cache load failed: $response"
+                yq ".Cache[].Query" config.yml | while IFS= read -r SQL; do
+                  echo "Executing SQL: $SQL"
+                  OUTPUT=$(echo "$SQL" | isql "$BRANCH" "$DB_USER" "$DB_PASS" 2>&1)
+                  STATUS=$?
+                  if [[ $STATUS -eq 0 ]] && echo "$OUTPUT" | grep -qi "SQLRowCount"; then
+                    echo "SUCCESS: Query executed"
+                  else
+                    echo "FAILED: Query did not execute"
                     exit 1
                   fi
-                  echo "Cache load successful on $host"
-                  echo "$(yq -o=json ".Cache | map({\"FIELD_NAME\": .FIELD_NAME, \"FIELD_VALUE\": .FIELD_VALUE})" config.yml)"
+                done
+
+          - task: CmdLine@2
+            displayName: Update Cache in Server
+            env:
+              BRANCH: $(Build.SourceBranchName)
+            inputs:
+              workingDirectory: $(Pipeline.Workspace)/drop/
+              script: |
+                set -e
+
+                IntegrationNode=($(yq e ".IntegrationNode" config.yml))
+                broker_files=()
+
+                for node in "${IntegrationNode[@]}"; do
+                  for broker_file in /home/devops/broker/$BRANCH/${node}*; do
+                    fname=$(basename "$broker_file")
+                    if [[ $fname =~ ^${node}_([0-9]+)\.broker$ ]]; then
+                      broker_files+=("$broker_file")
+                    fi
+                  done
+                done
+
+                if [ ${#broker_files[@]} -eq 0 ]; then
+                  echo "Error: No Integration Node found for $IntegrationNode"
+                  exit 1
                 fi
-              done
+
+                for broker_file in "${broker_files[@]}"; do
+                  host=$(cat "$broker_file" | grep host | cut -d"\"" -f4)
+                  if yq -e ".Cache" config.yml >/dev/null 2>&1; then
+                    response=$(curl -s -k -X POST http://"$host":8002/cache/v1/loadCache \
+                    -H "Content-Type: application/json" \
+                    -d "$(yq -o=json ".Cache | map({\"FIELD_NAME\": .FIELD_NAME, \"FIELD_VALUE\": .FIELD_VALUE})" config.yml)")
+                    if [[ "$response" != *'"RESPONSE":"success"'* ]]; then
+                      echo "Cache load failed: $response"
+                      exit 1
+                    fi
+                    echo "Cache load successful on $host"
+                    echo "$(yq -o=json ".Cache | map({\"FIELD_NAME\": .FIELD_NAME, \"FIELD_VALUE\": .FIELD_VALUE})" config.yml)"
+                  fi
+                done
