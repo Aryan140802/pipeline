@@ -1,83 +1,69 @@
-     steps:
+steps:
+  - download: current
+    artifact: drop
 
-        - download: current
-          artifact: drop
+  - task: CmdLine@2
+    displayName: Update Cache in Database
+    env:
+      BRANCH: $(Build.SourceBranchName)
+    inputs:
+      workingDirectory: $(Pipeline.Workspace)/cache-pipeline/
+      script: |
+        source ~/.bashrc
+        set -e
+        if [ ! -f cache.yml ]; then
+          echo "cache.yml file was not found !!"
+          exit 1
+        fi
+        yq ".Cache[].Query" cache.yml | while IFS= read -r SQL; do
+          echo "Executing SQL: $SQL"
+          OUTPUT=$(echo "$SQL" | isql "$BRANCH" "$DB_USER" "$DB_PASS" 2>&1)
+          STATUS=$?
+          if [[ $STATUS -eq 0 ]] && echo "$OUTPUT" | grep -qi "SQLRowCount"; then
+            echo "SUCCESS: Query executed"
+          else
+            echo "FAILED: Query did not execute"
+            exit 1
+          fi
+        done
 
-        - task: CmdLine@2
-          displayName: Update cache in Database
-          env:
-            BRANCH: $(Build.SourceBranchName)
-          inputs:
-            workingDirectory: $(Pipeline.Workspace)/drop/
-            script: |
-              source ~/.bashrc
-              set -e
-              if [ ! -f config.yml ]; then
-                echo "config.yml file was not found !!"
-                exit 1
-              fi
-
-              yq ".Cache[].Query" config.yml | while IFS= read -r SQL; do
-                echo "Executing SQL: $SQL"
-                OUTPUT=$(echo "$SQL" | isql "$BRANCH" "$DB_USER" "$DB_PASS" 2>&1)
-                STATUS=$?
-                if [[ $STATUS -eq 0 ]] && echo "$OUTPUT" | grep -qi "SQLRowCount"; then
-                  echo "SUCCESS: Query executed"
-                else
-                  echo "FAILED: Query did not execute"
-                  exit 1
-                fi
-              done
-
-        - task: CmdLine@2
-          displayName: Update Cache in Server
-          env:
-            BRANCH: $(Build.SourceBranchName)
-          inputs:
-            workingDirectory: $(Pipeline.Workspace)/drop/
-            script: |
-              set -e
-
-              IntegrationNode=($(yq e ".IntegrationNode" config.yml))
-              broker_files=()
-
-              for node in "${IntegrationNode[@]}"; do
-                for broker_file in /home/devops/broker/$BRANCH/${node}*; do
-                  fname=$(basename "$broker_file")
-                  if [[ $fname =~ ^${node}_([0-9]+)\.broker$ ]]; then
-                    broker_files+=("$broker_file")
-                  fi
-                done
-              done
-
-              if [ ${#broker_files[@]} -eq 0 ]; then
-                echo "Error: No Integration Node found for $IntegrationNode"
-                exit 1
-              fi
-
-              for broker_file in "${broker_files[@]}"; do
-                host=$(cat "$broker_file" | grep host | cut -d"\"" -f4)
-                if yq -e ".Cache" config.yml >/dev/null 2>&1; then
-                  response=$(curl --connect-timeout 3 --max-time 5 -s -k -X POST http://"$host":8002/cache/v1/loadCache \
-                  -H "Content-Type: application/json" \
-                  -d "$(yq -o=json ".Cache | map({\"FIELD_NAME\": .FIELD_NAME, \"FIELD_VALUE\": .FIELD_VALUE})" config.yml)")
-                  if [[ "$response" != *'"RESPONSE":"success"'* ]]; then
-                    echo "Cache load failed: $response"
-                    exit 1
-                  fi
-                  echo "Cache load successful on $host"
-                  echo "$(yq -o=json ".Cache | map({\"FIELD_NAME\": .FIELD_NAME, \"FIELD_VALUE\": .FIELD_VALUE})" config.yml)"
-                fi
-              done
-
-
-
-              this is my cache stage i want to change in this in a repo cache-pipeline there is a file cache.yml where i mention the query like #    Cache:   
-#      - Query: "Query to be executed in DB in single line"
-#        FIELD_NAME: "Update the server cache value, field_name and field_value will be updtaed on the server where the above IntegrationNode mentioned is present"
-#        FIELD_VALUE: "Update the server cache value"
-#      - Query:
-#        FIELD_NAME:
-#        FIELD_VALUE:
-
-change in the logic that it update on DB and server
+  - task: CmdLine@2
+    displayName: Update Cache in Server
+    env:
+      BRANCH: $(Build.SourceBranchName)
+    inputs:
+      workingDirectory: $(Pipeline.Workspace)/cache-pipeline/
+      script: |
+        set -e
+        if [ ! -f cache.yml ]; then
+          echo "cache.yml file was not found !!"
+          exit 1
+        fi
+        IntegrationNode=($(yq e ".IntegrationNode" cache.yml))
+        broker_files=()
+        for node in "${IntegrationNode[@]}"; do
+          for broker_file in /home/devops/broker/$BRANCH/${node}*; do
+            fname=$(basename "$broker_file")
+            if [[ $fname =~ ^${node}_([0-9]+)\.broker$ ]]; then
+              broker_files+=("$broker_file")
+            fi
+          done
+        done
+        if [ ${#broker_files[@]} -eq 0 ]; then
+          echo "Error: No Integration Node found for $IntegrationNode"
+          exit 1
+        fi
+        for broker_file in "${broker_files[@]}"; do
+          host=$(cat "$broker_file" | grep host | cut -d"\"" -f4)
+          if yq -e ".Cache" cache.yml >/dev/null 2>&1; then
+            response=$(curl --connect-timeout 3 --max-time 5 -s -k -X POST http://"$host":8002/cache/v1/loadCache \
+            -H "Content-Type: application/json" \
+            -d "$(yq -o=json ".Cache | map({\"FIELD_NAME\": .FIELD_NAME, \"FIELD_VALUE\": .FIELD_VALUE})" cache.yml)")
+            if [[ "$response" != *'"RESPONSE":"success"'* ]]; then
+              echo "Cache load failed: $response"
+              exit 1
+            fi
+            echo "Cache load successful on $host"
+            echo "$(yq -o=json ".Cache | map({\"FIELD_NAME\": .FIELD_NAME, \"FIELD_VALUE\": .FIELD_VALUE})" cache.yml)"
+          fi
+        done
