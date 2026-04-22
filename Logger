@@ -50,7 +50,9 @@ stages:
               fi
 
               # ── Ensure Config directory exists ───────────────────────────────
-              mkdir -p $(Build.SourcesDirectory)/app/Config
+              if [ ! -e $(Build.SourcesDirectory)/app/Config ]; then
+                mkdir -p $(Build.SourcesDirectory)/app/Config
+              fi
 
               # ── Pull config from eis-configurations for this branch ──────────
               EIS_CONFIG=$(Build.SourcesDirectory)/eis-configurations/"$BRANCH"_config.yml
@@ -88,14 +90,6 @@ stages:
 
               echo "Deploy flag: $DEPLOY"
               echo "##vso[task.setvariable variable=DeployFlag;isOutput=true]$DEPLOY"
-
-              cp "$CONFIG_OUT" $(Build.ArtifactStagingDirectory)/config.yml
-
-        - task: PublishBuildArtifacts@1
-          condition: always()
-          inputs:
-            PathtoPublish: $(Build.ArtifactStagingDirectory)
-            ArtifactName: drop
 
 
 # ============== BUILD STAGE ==============
@@ -136,7 +130,9 @@ stages:
                 applicationName="${{ parameters.applicationName }}"
               fi
 
-              mkdir -p $(Build.SourcesDirectory)/app/Config
+              if [ ! -e $(Build.SourcesDirectory)/app/Config ]; then
+                mkdir -p $(Build.SourcesDirectory)/app/Config
+              fi
 
               # ── For main branch: build only, no config ────────────────────────
               if [ "$BRANCH" = "main" ]; then
@@ -184,9 +180,7 @@ stages:
   displayName: Deploy Stage
   pool:
     name: TFS-RH-1
-  dependsOn:
-    - Validation_Stage
-    - Build
+  dependsOn: [Validation_Stage, Build]
   condition: |
     and(
       succeeded('Build'),
@@ -196,21 +190,16 @@ stages:
   jobs:
     - deployment: DeployApp
       displayName: Deployment Job
-      environment: Test
-      pool:
-        name: TFS-RH-1
-      workspace:
-        clean: all
+      environment: $(Build.SourceBranchName)
       strategy:
         runOnce:
           deploy:
             steps:
-
               - download: current
                 artifact: drop
 
               - task: CmdLine@2
-                displayName: Deploying BAR File
+                displayName: Dynamic Multi-Node Deployment
                 env:
                   BRANCH: $(Build.SourceBranchName)
                 inputs:
@@ -219,77 +208,73 @@ stages:
                     set -e
                     . /opt/IBM/ace/server/bin/mqsiprofile
 
-                    # ── Resolve Application Metadata ──────────────────────────
+                    # ── 1. Load Data ──────────────────────────────────────────
                     ApplicationName=$(yq e ".ApplicationName" config.yml)
-                    NODES_RAW=$(yq e ".IntegrationNode" config.yml)
-                    SERVERS_RAW=$(yq e ".IntegrationServer // \"\"" config.yml | tr -d '[:space:]' | sed 's/null//g')
+                    # Convert comma-separated strings to space-separated arrays
+                    NODES_RAW=$(yq e ".IntegrationNode" config.yml | tr -d ',' | sed 's/null//g')
+                    SERVERS_RAW=$(yq e ".IntegrationServer // \"\"" config.yml | tr -d ',' | sed 's/null//g')
 
-                    echo "ApplicationName     : $ApplicationName"
-                    echo "IntegrationNode(s)  : $NODES_RAW"
-
-                    if [ -z "$NODES_RAW" ] || [ "$NODES_RAW" = "null" ]; then
-                      echo "ERROR: IntegrationNode is missing in config.yml"
-                      exit 1
-                    fi
-
-                    # Convert Node string to array
                     IFS=' ' read -r -a NODES <<< "$NODES_RAW"
                     BROKER_BASE="/home/devops/broker/$BRANCH"
 
-                    # ── Loop over every IntegrationNode ───────────────────────
+                    # ── 2. Node Loop ──────────────────────────────────────────
                     for IntegrationNode in "${NODES[@]}"; do
-                      echo ""
-                      echo "===================================================="
-                      echo " Processing Node Group: $IntegrationNode"
+                      echo -e "\n===================================================="
+                      echo " NODE: $IntegrationNode"
                       echo "===================================================="
 
-                      # Find matching .broker files (e.g., PAYMENT_SYS_101.broker)
-                      BROKER_FILES=("$BROKER_BASE"/${IntegrationNode}_*.broker)
-                      
+                      # Find .broker connection files
+                      BROKER_FILES=("$BROKER_BASE"/${IntegrationNode}*.broker)
                       if [ ! -e "${BROKER_FILES[0]}" ]; then
-                        echo "WARNING: No broker files found for '$IntegrationNode' in $BROKER_BASE"
+                        echo "!! Warning: No broker connection files found for $IntegrationNode"
                         continue
                       fi
 
-                      # ── Loop over each specific Broker Connection File ──────
                       for broker_file in "${BROKER_FILES[@]}"; do
                         fname=$(basename "$broker_file")
-                        echo ""
-                        echo "--> Target Connection: $fname"
+                        echo "--- Connection: $fname ---"
 
-                        # ── Resolve Servers (Static vs Dynamic) ───────────────
-                        if [ -z "$SERVERS_RAW" ]; then
-                          echo "No servers in config. Discovering via mqsilist..."
-                          
-                          # Capture logic from user photo:
-                          # 1. mqsilist -n: Query the node file
-                          # 2. awk -F"'": Extract the server name between quotes
-                          # 3. grep -v: Remove empty lines
-                          # 4. tail -n +2: Skip the first line (Node name) to get only Servers
-                          MQSI_SERVERS=$(mqsilist -n "$broker_file" | awk -F"'" '{print $2}' | grep -v '^$' | tail -n +2)
-                          
-                          if [ -z "$MQSI_SERVERS" ]; then
-                            echo "ERROR: No integration servers found on $fname"
-                            exit 1
-                          fi
-                          
-                          # Convert newline-separated results into the SERVERS array
-                          mapfile -t SERVERS <<< "$MQSI_SERVERS"
+                        # ── 3. Dynamic Discovery (The Ground Truth) ───────────
+                        # Extracts only the server names from the node file
+                        MQSI_DISCOVERED=$(mqsilist -n "$broker_file" | awk -F"'" '{print $2}' | grep -v '^$' | tail -n +2)
+                        
+                        if [ -z "$MQSI_DISCOVERED" ]; then
+                          echo "!! Error: No active servers found on $fname via mqsilist."
+                          exit 1
+                        fi
+                        mapfile -t ALL_ACTIVE_SERVERS <<< "$MQSI_DISCOVERED"
+
+                        # ── 4. Determine Targets ──────────────────────────────
+                        TARGET_SERVERS=()
+
+                        if [ -n "$SERVERS_RAW" ]; then
+                          # SCENARIO: Config has a list. We must VALIDATE before deploying.
+                          echo "Logic: Manual List Provided. Validating against live node..."
+                          for s in "${ALL_ACTIVE_SERVERS[@]}"; do
+                            if [[ " $SERVERS_RAW " =~ " $s " ]]; then
+                              TARGET_SERVERS+=("$s")
+                              echo "  [VALIDATED] Server '$s' is active and in config."
+                            else
+                              echo "  [IGNORED]   Server '$s' is active but NOT in config."
+                            fi
+                          done
                         else
-                          echo "Using servers from configuration..."
-                          IFS=' ' read -r -a SERVERS <<< "$SERVERS_RAW"
+                          # SCENARIO: Config is empty. Deploy to everything active.
+                          echo "Logic: No list provided. Deploying to ALL discovered servers..."
+                          TARGET_SERVERS=("${ALL_ACTIVE_SERVERS[@]}")
                         fi
 
-                        # ── Execute Deployment ────────────────────────────────
-                        for IntegrationServer in "${SERVERS[@]}"; do
-                          echo "      [DEPLOY] -> $IntegrationServer"
-                          ibmint deploy \
-                            --input-bar-file "$ApplicationName.bar" \
-                            --integration-node-file "$broker_file" \
-                            --output-server "$IntegrationServer"
-                        done
+                        # ── 5. Execution ──────────────────────────────────────
+                        if [ ${#TARGET_SERVERS[@]} -eq 0 ]; then
+                          echo "!! Result: No servers matched the configuration for this node."
+                        else
+                          for server in "${TARGET_SERVERS[@]}"; do
+                            echo ">>> DEPLOYING -> $server"
+                            ibmint deploy \
+                              --input-bar-file "$ApplicationName.bar" \
+                              --integration-node-file "$broker_file" \
+                              --output-server "$server"
+                          done
+                        fi
                       done
                     done
-
-                    echo ""
-                    echo "Successfully completed all deployment tasks."
