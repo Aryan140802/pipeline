@@ -33,6 +33,15 @@ stages:
                 echo "Application name : $applicationName"
                 echo "branch: $BRANCH"
 
+                # ── Detect PR targeting main ──────────────────────────────────
+                TARGET_BRANCH="$(System.PullRequest.TargetBranch)"
+                IS_PR_TO_MAIN="false"
+                if [[ "$TARGET_BRANCH" == "refs/heads/main" || "$TARGET_BRANCH" == "main" ]]; then
+                  IS_PR_TO_MAIN="true"
+                fi
+                echo "##vso[task.setvariable variable=IsPRToMain;isOutput=true]$IS_PR_TO_MAIN"
+                echo "  PR targeting main: $IS_PR_TO_MAIN"
+
                 if [ "$BRANCH" = "main" ]; then
                   echo "Branch is 'main' — skipping config validation"
                   echo "##vso[task.setvariable variable=DeployFlag;isOutput=true]false"
@@ -43,7 +52,6 @@ stages:
                 CONFIG_FILE="$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_config.yml"
                 OVERRIDE_FILE="$(Build.SourcesDirectory)/eis-configurations/${BRANCH}_override.yml"
 
-               
                 echo ""
                 echo "========= [3/3] Branch-specific config validation ========="
 
@@ -177,13 +185,55 @@ stages:
                 echo "##vso[task.setvariable variable=CacheFlag;isOutput=true]$CACHE_PRESENT"
 
 
+  # ============== APPROVAL STAGE (PR → main only) ============
+  - stage: Approval_Stage
+    displayName: PR Approval (main)
+    pool:
+      name: TFS-RH-1
+    dependsOn: Validation_Stage
+    # Runs only when the PR's target branch is main
+    condition: |
+      and(
+        succeeded('Validation_Stage'),
+        eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.IsPRToMain'], 'true')
+      )
+
+    jobs:
+      - deployment: Approval_Gate
+        displayName: Waiting for Approval
+        # ⚠️  Create an Environment named "main-approval" in Azure DevOps
+        #     and add your Approvers under:
+        #     Pipelines → Environments → main-approval → Approvals and checks
+        environment: main-approval
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: CmdLine@2
+                  displayName: Approval granted — proceeding
+                  inputs:
+                    script: |
+                      echo "✔ PR to main approved. Pipeline may continue."
+
+
   # ================= BUILD STAGE =================
   - stage: Build
     displayName: Build Stage
-    dependsOn: Validation_Stage
+    dependsOn:
+      - Validation_Stage
+      - Approval_Stage   # waits for approval when applicable
     pool:
       name: TFS-RH-1
-    condition: succeeded('Validation_Stage')
+    condition: |
+      and(
+        succeeded('Validation_Stage'),
+        or(
+          # Approval stage was skipped (not a PR to main) — proceed normally
+          eq(stageDependencies.Approval_Stage.result, 'Skipped'),
+          # Approval stage ran and was approved
+          succeeded('Approval_Stage')
+        )
+      )
 
     jobs:
       - job: Build_Job
@@ -287,12 +337,17 @@ stages:
       name: TFS-RH-1
     dependsOn:
       - Validation_Stage
+      - Approval_Stage
       - Build
     condition: |
       and(
         succeeded('Build'),
         eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'], 'true'),
-        ne(variables['Build.SourceBranchName'], 'main')
+        ne(variables['Build.SourceBranchName'], 'main'),
+        or(
+          eq(stageDependencies.Approval_Stage.result, 'Skipped'),
+          succeeded('Approval_Stage')
+        )
       )
 
     jobs:
@@ -385,6 +440,7 @@ stages:
       name: TFS-RH-1
     dependsOn:
       - Validation_Stage
+      - Approval_Stage
       - Build
     condition: |
       and(
@@ -394,7 +450,11 @@ stages:
           eq(dependencies.Validation_Stage.outputs['Validation_Job.val_task.DeployFlag'], 'false'),
           succeeded('Build')
         ),
-        ne(variables['Build.SourceBranchName'], 'main')
+        ne(variables['Build.SourceBranchName'], 'main'),
+        or(
+          eq(stageDependencies.Approval_Stage.result, 'Skipped'),
+          succeeded('Approval_Stage')
+        )
       )
 
     jobs:
